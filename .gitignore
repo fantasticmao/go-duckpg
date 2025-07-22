@@ -1,0 +1,9 @@
+.DS_Store
+
+test.db
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
