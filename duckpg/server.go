@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"github.com/jackc/pgx/v5/pgproto3"
 	_ "github.com/marcboeker/go-duckdb/v2"
+	"log"
 	"net"
 	"os"
 	"reflect"
 )
+
+var infoLog = log.New(os.Stdout, "[go-duckdb] ", log.Ldate|log.Ltime)
+var errorLog = log.New(os.Stderr, "[go-duckdb] ", log.Lshortfile)
 
 // Startup initializes the PostgreSQL wire server and listens for incoming connections.
 func Startup(address string, duckdb *sql.DB) error {
@@ -24,25 +28,24 @@ func Startup(address string, duckdb *sql.DB) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("connection accepted, remote addr: %s\n", conn.RemoteAddr())
+		infoLog.Printf("connection accepted, remote addr: %s\n", conn.RemoteAddr())
 
 		go func(_conn net.Conn) {
 			pgWire := &pgWire{
 				conn:    _conn,
-				backend: pgproto3.NewBackend(conn, conn),
+				backend: pgproto3.NewBackend(_conn, _conn),
 			}
 
-			err = pgWire.start()
+			err = pgWire.run()
 			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, err.Error())
+				errorLog.Printf("pgwire server run error: %s\n", err.Error())
 			}
-			fmt.Printf("postgreSQL wire server started, remote addr: %s\n", conn.RemoteAddr())
 
 			err = pgWire.close()
 			if err != nil {
-				_, _ = fmt.Fprintln(os.Stderr, err.Error())
+				errorLog.Printf("pgwire server close error: %s\n", err.Error())
 			}
-			fmt.Printf("connection closed, remote addr: %s\n", conn.RemoteAddr())
+			infoLog.Printf("connection closed, remote addr: %s\n", _conn.RemoteAddr())
 		}(conn)
 	}
 }
@@ -52,7 +55,7 @@ type pgWire struct {
 	backend *pgproto3.Backend
 }
 
-func (pg *pgWire) start() error {
+func (pg *pgWire) run() error {
 	err := pg.handleStartup()
 	if err != nil {
 		return err

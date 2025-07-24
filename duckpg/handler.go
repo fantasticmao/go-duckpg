@@ -47,6 +47,8 @@ func handleSSLRequest(msg pgproto3.FrontendMessage) ([]byte, error) {
 
 func handleQuery(msg pgproto3.FrontendMessage) ([]byte, error) {
 	query := msg.(*pgproto3.Query).String
+	infoLog.Printf("received sql query: %s\n", query)
+
 	rows, err := database.Query(query)
 	if err != nil {
 		return nil, err
