@@ -15,7 +15,7 @@ var infoLog = log.New(os.Stdout, "[go-duckdb] ", log.Ldate|log.Ltime)
 var errorLog = log.New(os.Stderr, "[go-duckdb] ", log.Lshortfile)
 
 // Startup initializes the PostgreSQL wire server and listens for incoming connections.
-func Startup(address string, duckdb *sql.DB) error {
+func Startup(duckdb *sql.DB, address string) error {
 	initDatabase(duckdb)
 
 	listener, err := net.Listen("tcp", address)

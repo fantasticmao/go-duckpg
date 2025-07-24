@@ -13,7 +13,7 @@ func main() {
 	err = db.Ping()
 	checkError(err)
 
-	err = duckpg.Startup(":5432", db)
+	err = duckpg.Startup(db, ":5432")
 	checkError(err)
 }
 
