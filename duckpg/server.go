@@ -4,24 +4,17 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgproto3"
+	_ "github.com/marcboeker/go-duckdb/v2"
 	"net"
 	"os"
 	"reflect"
 )
 
-type Server struct {
-	address string
-}
+// Startup initializes the PostgreSQL wire server and listens for incoming connections.
+func Startup(address string, duckdb *sql.DB) error {
+	initDatabase(duckdb)
 
-func NewServer(address string, duckdb *sql.DB) *Server {
-	initHandlerMapping(duckdb)
-	return &Server{
-		address: address,
-	}
-}
-
-func (s *Server) StartUp() error {
-	listener, err := net.Listen("tcp", s.address)
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}

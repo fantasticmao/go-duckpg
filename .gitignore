@@ -1,6 +1,7 @@
 .DS_Store
 
 test.db
+test.db.wal
 
 ### IntelliJ IDEA ###
 .idea

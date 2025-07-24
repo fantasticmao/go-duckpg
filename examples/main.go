@@ -13,8 +13,7 @@ func main() {
 	err = db.Ping()
 	checkError(err)
 
-	server := duckpg.NewServer(":5432", db)
-	err = server.StartUp()
+	err = duckpg.Startup(":5432", db)
 	checkError(err)
 }
 

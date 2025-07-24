@@ -18,12 +18,12 @@ var handlerMapping = map[reflect.Type]func(msg pgproto3.FrontendMessage) ([]byte
 // database is the global database connection used by the message handlers.
 var database *sql.DB
 
-// handlerMappingInitOnce ensures that the handler mapping is initialized only once.
-var handlerMappingInitOnce = sync.Once{}
+// databaseInitOnce ensures that the database connection is initialized only once.
+var databaseInitOnce = sync.Once{}
 
-func initHandlerMapping(duckdb *sql.DB) {
-	handlerMappingInitOnce.Do(func() {
-		database = duckdb
+func initDatabase(db *sql.DB) {
+	databaseInitOnce.Do(func() {
+		database = db
 	})
 }
 
