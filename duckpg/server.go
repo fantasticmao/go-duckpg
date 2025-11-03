@@ -3,8 +3,8 @@ package duckpg
 import (
 	"database/sql"
 	"fmt"
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgproto3"
-	_ "github.com/marcboeker/go-duckdb/v2"
 	"log"
 	"net"
 	"os"
@@ -30,10 +30,10 @@ func Startup(duckdb *sql.DB, address string) error {
 		}
 		infoLog.Printf("connection accepted, remote addr: %s\n", conn.RemoteAddr())
 
-		go func(_conn net.Conn) {
+		go func() {
 			pgWire := &pgWire{
-				conn:    _conn,
-				backend: pgproto3.NewBackend(_conn, _conn),
+				conn:    conn,
+				backend: pgproto3.NewBackend(conn, conn),
 			}
 
 			err = pgWire.run()
@@ -45,8 +45,8 @@ func Startup(duckdb *sql.DB, address string) error {
 			if err != nil {
 				errorLog.Printf("pgwire server close error: %s\n", err.Error())
 			}
-			infoLog.Printf("connection closed, remote addr: %s\n", _conn.RemoteAddr())
-		}(conn)
+			infoLog.Printf("connection closed, remote addr: %s\n", conn.RemoteAddr())
+		}()
 	}
 }
 

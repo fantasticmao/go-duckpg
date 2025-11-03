@@ -2,8 +2,8 @@ package main
 
 import (
 	"database/sql"
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/fantasticmao/go-duckpg/duckpg"
-	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
 func main() {

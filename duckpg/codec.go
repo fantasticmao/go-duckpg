@@ -1,10 +1,14 @@
 package duckpg
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/jackc/pgx/v5/pgtype"
 	"strconv"
+	"time"
 )
 
 const (
@@ -14,7 +18,42 @@ const (
 	rowDescFormat               = int16(0)
 )
 
-var pgTypeMap = pgtype.NewMap()
+func duckdbIntToBytes(data any) ([]byte, error) {
+	return nil, fmt.Errorf("unsupported duckdb data type: %#v", data)
+}
+
+type rowData struct {
+	data any
+}
+
+func (dst *rowData) Scan(src any) error {
+	dst.data = src
+	return nil
+}
+
+func (dst *rowData) toBytes() ([]byte, error) {
+	switch d := dst.data.(type) {
+	case nil:
+		return nil, nil
+	case []byte:
+		return d, nil
+	case string:
+		return []byte(d), nil
+	case bool, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		buf := new(bytes.Buffer)
+		err := binary.Write(buf, binary.BigEndian, 1)
+		err = binary.Write(buf, binary.BigEndian, d)
+		return buf.Bytes(), err
+	case time.Time:
+		return []byte(d.Format(time.RFC3339)), nil
+	case []any, map[any]any, map[string]any:
+		return json.Marshal(d)
+	default:
+		return nil, fmt.Errorf("unsupported duckdb data type: %#v", d)
+	}
+}
 
 // Message format of RowDescription: https://www.postgresql.org/docs/current/protocol-message-formats.html#PROTOCOL-MESSAGE-FORMATS-ROWDESCRIPTION
 func encodeRowDescription(buf []byte, rows *sql.Rows) ([]byte, int, error) {
@@ -27,18 +66,19 @@ func encodeRowDescription(buf []byte, rows *sql.Rows) ([]byte, int, error) {
 	rowDesc := make([]pgproto3.FieldDescription, colLen)
 	for i, colType := range colTypes {
 		// FIXME determine the correct DataTypeOID and DataTypeSize
-		//dt, ok := pgTypeMap.TypeForValue(colType.ScanType())
-		//if !ok {
-		//	return nil, -1, fmt.Errorf("unknown type %T", colType.ScanType())
-		//}
 		colName := colType.Name()
+		var oid uint32 = 25
+		if duckdbType, ok1 := goTypeToDuckdbTypeMap[colType.ScanType()]; ok1 {
+			if pgOid, ok2 := duckdbTypeToPgOidMap[duckdbType]; ok2 {
+				oid = pgOid
+			}
+		}
 
 		rowDesc[i] = pgproto3.FieldDescription{
 			Name:                 []byte(colName),
 			TableOID:             rowDescTableOID,
 			TableAttributeNumber: rowDescTableAttributeNumber,
-			// FIXME
-			DataTypeOID: 25,
+			DataTypeOID:          oid,
 			// FIXME
 			DataTypeSize: int16(-1),
 			TypeModifier: rowDescTypeModifier,
@@ -53,15 +93,14 @@ func encodeRowDescription(buf []byte, rows *sql.Rows) ([]byte, int, error) {
 func encodeDataRow(buf []byte, rows *sql.Rows, colLen int) ([]byte, int, error) {
 	rowCnt := 0
 	for ; rows.Next(); rowCnt++ {
-		data := make([][]byte, colLen)
-		for i := range data {
-			// FIXME determine the correct size for each column
-			data[i] = make([]byte, 8)
+		row := make([]rowData, colLen)
+		for i := range row {
+			row[i] = rowData{}
 		}
 
 		dataScan := make([]any, colLen)
-		for i := range data {
-			dataScan[i] = &data[i]
+		for i := range row {
+			dataScan[i] = &row[i]
 		}
 
 		err := rows.Scan(dataScan...)
@@ -69,7 +108,14 @@ func encodeDataRow(buf []byte, rows *sql.Rows, colLen int) ([]byte, int, error) 
 			return buf, rowCnt, err
 		}
 
-		buf, err = (&pgproto3.DataRow{Values: data}).Encode(buf)
+		values := make([][]byte, colLen)
+		for i := range row {
+			values[i], err = row[i].toBytes()
+			if err != nil {
+				return buf, rowCnt, err
+			}
+		}
+		buf, err = (&pgproto3.DataRow{Values: values}).Encode(buf)
 		if err != nil {
 			return buf, rowCnt, err
 		}
