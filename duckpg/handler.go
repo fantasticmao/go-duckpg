@@ -9,10 +9,10 @@ import (
 
 // handlerMapping maps message types to their respective handlers.
 var handlerMapping = map[reflect.Type]func(msg pgproto3.FrontendMessage) ([]byte, error){
-	reflect.TypeOf(&pgproto3.StartupMessage{}): handleStartupMessage,
-	reflect.TypeOf(&pgproto3.SSLRequest{}):     handleSSLRequest,
-	reflect.TypeOf(&pgproto3.Query{}):          handleQuery,
-	reflect.TypeOf(&pgproto3.Terminate{}):      handleTerminate,
+	reflect.TypeFor[*pgproto3.StartupMessage](): handleStartupMessage,
+	reflect.TypeFor[*pgproto3.SSLRequest]():     handleSSLRequest,
+	reflect.TypeFor[*pgproto3.Query]():          handleQuery,
+	reflect.TypeFor[*pgproto3.Terminate]():      handleTerminate,
 }
 
 // database is the global database connection used by the message handlers.
