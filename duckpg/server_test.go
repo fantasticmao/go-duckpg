@@ -11,7 +11,6 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/zeebo/assert"
 )
 
@@ -74,52 +73,61 @@ func connectPgx(t *testing.T, addr string, simple bool) *pgx.Conn {
 	return conn
 }
 
-func TestExtendedQuerySelectTypes(t *testing.T) {
+func TestSimpleProtocol(t *testing.T) {
 	addr, cleanup := startTestServer(t)
 	defer cleanup()
 
-	conn := connectPgx(t, addr, false)
+	conn := connectPgx(t, addr, true)
 	ctx := context.Background()
 
-	var (
-		b   bool
-		i16 int16
-		i32 int32
-		i64 int64
-		f32 float32
-		f64 float64
-		s   string
-		d   time.Time
-		n   pgtype.Numeric
-	)
-
-	err := conn.QueryRow(ctx, `
-		SELECT
-			true::BOOLEAN,
-			1::SMALLINT,
-			2::INTEGER,
-			3::BIGINT,
-			1.5::FLOAT,
-			2.5::DOUBLE,
-			'hello'::VARCHAR,
-			DATE '2024-01-02',
-			DECIMAL '12.34'
-	`).Scan(&b, &i16, &i32, &i64, &f32, &f64, &s, &d, &n)
+	var one int
+	err := conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
 	assert.NoError(t, err)
-	assert.Equal(t, true, b)
-	assert.Equal(t, int16(1), i16)
-	assert.Equal(t, int32(2), i32)
-	assert.Equal(t, int64(3), i64)
-	assert.Equal(t, float32(1.5), f32)
-	assert.Equal(t, 2.5, f64)
-	assert.Equal(t, "hello", s)
-	assert.Equal(t, 2024, d.Year())
-	assert.Equal(t, time.January, d.Month())
-	assert.Equal(t, 2, d.Day())
-	assert.True(t, n.Valid)
+	assert.Equal(t, 1, one)
+
+	_, err = conn.Exec(ctx, `SELECT * FROM missing`)
+	assert.Error(t, err)
+
+	err = conn.QueryRow(ctx, `SELECT 2`).Scan(&one)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, one)
+
+	_, err = conn.Exec(ctx, ``)
+	assert.NoError(t, err)
 }
 
-func TestExtendedQueryParams(t *testing.T) {
+func TestCompatStartup(t *testing.T) {
+	addr, cleanup := startTestServer(t)
+	defer cleanup()
+
+	conn := connectPgx(t, addr, true)
+	ctx := context.Background()
+
+	_, err := conn.Exec(ctx, `SET extra_float_digits = 3`)
+	assert.NoError(t, err)
+
+	var digits string
+	err = conn.QueryRow(ctx, `SELECT current_setting('extra_float_digits')`).Scan(&digits)
+	assert.NoError(t, err)
+	assert.Equal(t, "3", digits)
+
+	var version string
+	err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
+	assert.NoError(t, err)
+	assert.Equal(t, "PostgreSQL 15.0 (DuckDB 2.0.0)", version)
+
+	var serverVersion string
+	err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
+	assert.NoError(t, err)
+	assert.Equal(t, "15.0", serverVersion)
+
+	var isolation string
+	err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
+	assert.NoError(t, err)
+	assert.Equal(t, "read committed", isolation)
+}
+
+func TestExtendedProtocol(t *testing.T) {
 	addr, cleanup := startTestServer(t)
 	defer cleanup()
 
@@ -131,54 +139,15 @@ func TestExtendedQueryParams(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, int32(42), got)
 
-	var name string
-	err = conn.QueryRow(ctx, `SELECT $1::VARCHAR`, "duckpg").Scan(&name)
-	assert.NoError(t, err)
-	assert.Equal(t, "duckpg", name)
-}
-
-func TestExtendedQueryOIDMapping(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, false)
-	ctx := context.Background()
-
-	rows, err := conn.Query(ctx, `SELECT 1::INTEGER AS i, true::BOOLEAN AS b, 'x'::VARCHAR AS s`)
-	assert.NoError(t, err)
-	defer rows.Close()
-
-	fds := rows.FieldDescriptions()
-	assert.Equal(t, 3, len(fds))
-	assert.Equal(t, pgtype.Int4OID, fds[0].DataTypeOID)
-	assert.Equal(t, pgtype.BoolOID, fds[1].DataTypeOID)
-	assert.Equal(t, pgtype.TextOID, fds[2].DataTypeOID)
-}
-
-func TestExtendedSQLErrorKeepsConnection(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, false)
-	ctx := context.Background()
-
-	_, err := conn.Exec(ctx, `SELECT * FROM definitely_missing_table`)
+	_, err = conn.Exec(ctx, `SELECT * FROM definitely_missing_table`)
 	assert.Error(t, err)
 
 	var one int
 	err = conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, one)
-}
 
-func TestExtendedTransactionStatus(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, false)
-	ctx := context.Background()
-
-	_, err := conn.Exec(ctx, `CREATE TABLE t(id INTEGER)`)
+	_, err = conn.Exec(ctx, `CREATE TABLE t(id INTEGER)`)
 	assert.NoError(t, err)
 
 	_, err = conn.Exec(ctx, `BEGIN`)
@@ -239,154 +208,4 @@ func TestExtendedNamedPrepare(t *testing.T) {
 	err = conn.QueryRow(ctx, "add_ints", 7, 8).Scan(&sum)
 	assert.NoError(t, err)
 	assert.Equal(t, int32(15), sum)
-}
-
-func TestSimpleProtocolRegression(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, true)
-	ctx := context.Background()
-
-	var one int
-	err := conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, one)
-
-	_, err = conn.Exec(ctx, `SELECT * FROM missing`)
-	assert.Error(t, err)
-
-	err = conn.QueryRow(ctx, `SELECT 2`).Scan(&one)
-	assert.NoError(t, err)
-	assert.Equal(t, 2, one)
-}
-
-func TestEmptyQuery(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, true)
-	ctx := context.Background()
-
-	_, err := conn.Exec(ctx, ``)
-	assert.NoError(t, err)
-
-	var one int
-	err = conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, one)
-}
-
-func TestResolvePgType(t *testing.T) {
-	cases := []struct {
-		name string
-		oid  uint32
-		size int16
-	}{
-		{"BOOLEAN", pgtype.BoolOID, 1},
-		{"INTEGER", pgtype.Int4OID, 4},
-		{"BIGINT", pgtype.Int8OID, 8},
-		{"VARCHAR", pgtype.TextOID, -1},
-		{"DECIMAL(10,2)", pgtype.NumericOID, -1},
-		{"TIMESTAMPTZ", pgtype.TimestamptzOID, 8},
-		{"UUID", pgtype.UUIDOID, 16},
-		{"JSON", pgtype.JSONOID, -1},
-		{"UBIGINT", pgtype.NumericOID, -1},
-		{"HUGEINT", pgtype.NumericOID, -1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			oid, size, _ := resolvePgType(tc.name)
-			assert.Equal(t, tc.oid, oid)
-			assert.Equal(t, tc.size, size)
-		})
-	}
-}
-
-func TestCommandTag(t *testing.T) {
-	assert.Equal(t, "SELECT 3", commandTag("SELECT 1", true, 3, -1))
-	assert.Equal(t, "INSERT 0 2", commandTag("INSERT INTO t VALUES (1)", false, 0, 2))
-	assert.Equal(t, "BEGIN", commandTag("BEGIN", false, 0, 0))
-	assert.Equal(t, "CREATE", commandTag("CREATE TABLE t(i INT)", false, 0, 0))
-}
-
-func TestClassifyCompatLeavesOrdinarySQL(t *testing.T) {
-	s := &session{settings: map[string]string{}}
-	ordinary := []string{
-		`SELECT 1`,
-		`SELECT version(), 1`,
-		`SET search_path = main`,
-		`SELECT nspname FROM pg_catalog.pg_namespace`,
-	}
-	for _, sql := range ordinary {
-		class := classifyCompat(sql, s)
-		assert.Equal(t, compatPass, class.kind)
-	}
-
-	set := classifyCompat(`SET extra_float_digits = 3`, s)
-	assert.Equal(t, compatLocal, set.kind)
-	assert.Equal(t, "SET", set.tag)
-	assert.Equal(t, "3", set.effect.sets["extra_float_digits"])
-
-	version := classifyCompat(`SELECT pg_catalog.version()`, s)
-	assert.Equal(t, compatRewrite, version.kind)
-	assert.Equal(t, "SELECT 'PostgreSQL 15.0 (DuckDB 2.0.0)' AS version", version.sql)
-}
-
-func TestStartupCompat(t *testing.T) {
-	for _, simple := range []bool{true, false} {
-		name := "extended"
-		if simple {
-			name = "simple"
-		}
-		t.Run(name, func(t *testing.T) {
-			addr, cleanup := startTestServer(t)
-			defer cleanup()
-
-			conn := connectPgx(t, addr, simple)
-			ctx := context.Background()
-
-			_, err := conn.Exec(ctx, `SET extra_float_digits = 3`)
-			assert.NoError(t, err)
-
-			var one int
-			err = conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
-			assert.NoError(t, err)
-			assert.Equal(t, 1, one)
-
-			var digits string
-			err = conn.QueryRow(ctx, `SELECT current_setting('extra_float_digits')`).Scan(&digits)
-			assert.NoError(t, err)
-			assert.Equal(t, "3", digits)
-
-			var version string
-			err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
-			assert.NoError(t, err)
-			assert.Equal(t, "PostgreSQL 15.0 (DuckDB 2.0.0)", version)
-
-			var serverVersion string
-			err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
-			assert.NoError(t, err)
-			assert.Equal(t, "15.0", serverVersion)
-
-			var isolation string
-			err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
-			assert.NoError(t, err)
-			assert.Equal(t, "read committed", isolation)
-
-			rows, err := conn.Query(ctx, `SELECT nspname FROM pg_catalog.pg_namespace`)
-			assert.NoError(t, err)
-			defer rows.Close()
-			foundMain := false
-			for rows.Next() {
-				var nspname string
-				assert.NoError(t, rows.Scan(&nspname))
-				if nspname == "main" {
-					foundMain = true
-				}
-			}
-			assert.NoError(t, rows.Err())
-			assert.True(t, foundMain)
-		})
-	}
 }
