@@ -104,6 +104,20 @@ func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 
 func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
 	ctx := context.Background()
+	class := classifyCompat(query, pg.session)
+	switch class.kind {
+	case compatLocal:
+		pg.session.applyEffect(class.effect)
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
+		buf, err := encodeCommandComplete(nil, class.tag)
+		if err != nil {
+			return nil, err
+		}
+		return encodeReadyForQuery(buf, pg.session.txStatus)
+	case compatRewrite:
+		pg.session.applyEffect(class.effect)
+		query = class.sql
+	}
 
 	if prefersExec(query) {
 		return pg.executeExec(ctx, query)

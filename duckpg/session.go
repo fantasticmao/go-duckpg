@@ -24,6 +24,8 @@ type preparedStmt struct {
 	query     string
 	paramOIDs []uint32
 	fields    []pgproto3.FieldDescription // nil means no result columns (NoData)
+	localTag  string                      // non-empty: Execute returns this tag and skips DuckDB
+	effect    compatEffect
 }
 
 // portal is a bound statement ready for Execute.
@@ -44,6 +46,7 @@ type session struct {
 	statements      map[string]*preparedStmt
 	portals         map[string]*portal
 	ignoreUntilSync bool
+	settings        map[string]string // lowercase PostgreSQL GUC name → session value
 }
 
 func newSession(db *sql.DB) (*session, error) {
@@ -58,6 +61,7 @@ func newSession(db *sql.DB) (*session, error) {
 		secretKey:  randomSecretKey(),
 		statements: make(map[string]*preparedStmt),
 		portals:    make(map[string]*portal),
+		settings:   make(map[string]string),
 	}
 	return s, nil
 }

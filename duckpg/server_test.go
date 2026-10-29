@@ -309,3 +309,84 @@ func TestCommandTag(t *testing.T) {
 	assert.Equal(t, "BEGIN", commandTag("BEGIN", false, 0, 0))
 	assert.Equal(t, "CREATE", commandTag("CREATE TABLE t(i INT)", false, 0, 0))
 }
+
+func TestClassifyCompatLeavesOrdinarySQL(t *testing.T) {
+	s := &session{settings: map[string]string{}}
+	ordinary := []string{
+		`SELECT 1`,
+		`SELECT version(), 1`,
+		`SET search_path = main`,
+		`SELECT nspname FROM pg_catalog.pg_namespace`,
+	}
+	for _, sql := range ordinary {
+		class := classifyCompat(sql, s)
+		assert.Equal(t, compatPass, class.kind)
+	}
+
+	set := classifyCompat(`SET extra_float_digits = 3`, s)
+	assert.Equal(t, compatLocal, set.kind)
+	assert.Equal(t, "SET", set.tag)
+	assert.Equal(t, "3", set.effect.sets["extra_float_digits"])
+
+	version := classifyCompat(`SELECT pg_catalog.version()`, s)
+	assert.Equal(t, compatRewrite, version.kind)
+	assert.Equal(t, "SELECT 'PostgreSQL 15.0 (DuckDB 2.0.0)' AS version", version.sql)
+}
+
+func TestStartupCompat(t *testing.T) {
+	for _, simple := range []bool{true, false} {
+		name := "extended"
+		if simple {
+			name = "simple"
+		}
+		t.Run(name, func(t *testing.T) {
+			addr, cleanup := startTestServer(t)
+			defer cleanup()
+
+			conn := connectPgx(t, addr, simple)
+			ctx := context.Background()
+
+			_, err := conn.Exec(ctx, `SET extra_float_digits = 3`)
+			assert.NoError(t, err)
+
+			var one int
+			err = conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
+			assert.NoError(t, err)
+			assert.Equal(t, 1, one)
+
+			var digits string
+			err = conn.QueryRow(ctx, `SELECT current_setting('extra_float_digits')`).Scan(&digits)
+			assert.NoError(t, err)
+			assert.Equal(t, "3", digits)
+
+			var version string
+			err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
+			assert.NoError(t, err)
+			assert.Equal(t, "PostgreSQL 15.0 (DuckDB 2.0.0)", version)
+
+			var serverVersion string
+			err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
+			assert.NoError(t, err)
+			assert.Equal(t, "15.0", serverVersion)
+
+			var isolation string
+			err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
+			assert.NoError(t, err)
+			assert.Equal(t, "read committed", isolation)
+
+			rows, err := conn.Query(ctx, `SELECT nspname FROM pg_catalog.pg_namespace`)
+			assert.NoError(t, err)
+			defer rows.Close()
+			foundMain := false
+			for rows.Next() {
+				var nspname string
+				assert.NoError(t, rows.Scan(&nspname))
+				if nspname == "main" {
+					foundMain = true
+				}
+			}
+			assert.NoError(t, rows.Err())
+			assert.True(t, foundMain)
+		})
+	}
+}

@@ -38,6 +38,18 @@ func (pg *pgWire) handleParse(msg *pgproto3.Parse) ([]byte, error) {
 }
 
 func (pg *pgWire) inspectPrepare(query string, clientParamOIDs []uint32) (*preparedStmt, error) {
+	class := classifyCompat(query, pg.session)
+	if class.kind == compatLocal {
+		return &preparedStmt{
+			query:    query,
+			localTag: class.tag,
+			effect:   class.effect,
+		}, nil
+	}
+	if class.kind == compatRewrite {
+		query = class.sql
+	}
+
 	var ps *preparedStmt
 	err := pg.session.conn.Raw(func(driverConn any) error {
 		dc, ok := driverConn.(*duckdb.Conn)
@@ -85,6 +97,7 @@ func (pg *pgWire) inspectPrepare(query string, clientParamOIDs []uint32) (*prepa
 			query:     query,
 			paramOIDs: paramOIDs,
 			fields:    fields,
+			effect:    class.effect,
 		}
 		return nil
 	})
@@ -317,6 +330,11 @@ func (pg *pgWire) handleExecute(msg *pgproto3.Execute) ([]byte, error) {
 
 func (pg *pgWire) executePortalExec(ctx context.Context, p *portal) ([]byte, error) {
 	ps := p.stmt
+	if ps.localTag != "" {
+		pg.session.applyEffect(ps.effect)
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, nil)
+		return encodeCommandComplete(nil, ps.localTag)
+	}
 	result, err := pg.session.conn.ExecContext(ctx, ps.query, p.args...)
 	if err != nil {
 		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
@@ -333,6 +351,7 @@ func (pg *pgWire) executePortalExec(ctx context.Context, p *portal) ([]byte, err
 
 func (pg *pgWire) executePortalQuery(ctx context.Context, p *portal) ([]byte, error) {
 	ps := p.stmt
+	pg.session.applyEffect(ps.effect)
 	rows, err := pg.session.conn.QueryContext(ctx, ps.query, p.args...)
 	if err != nil {
 		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
