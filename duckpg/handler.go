@@ -9,9 +9,35 @@ import (
 )
 
 func (pg *pgWire) dispatch(msg pgproto3.FrontendMessage) ([]byte, error) {
+	if pg.session.ignoreUntilSync {
+		switch msg.(type) {
+		case *pgproto3.Sync:
+			return pg.handleSync(msg.(*pgproto3.Sync))
+		case *pgproto3.Terminate:
+			return nil, nil
+		default:
+			// Discard messages until Sync after an extended-protocol error.
+			return []byte{}, nil
+		}
+	}
+
 	switch m := msg.(type) {
 	case *pgproto3.Query:
 		return pg.handleQuery(m)
+	case *pgproto3.Parse:
+		return pg.handleParse(m)
+	case *pgproto3.Bind:
+		return pg.handleBind(m)
+	case *pgproto3.Describe:
+		return pg.handleDescribe(m)
+	case *pgproto3.Execute:
+		return pg.handleExecute(m)
+	case *pgproto3.Close:
+		return pg.handleClose(m)
+	case *pgproto3.Sync:
+		return pg.handleSync(m)
+	case *pgproto3.Flush:
+		return pg.handleFlush(m)
 	case *pgproto3.Terminate:
 		return nil, nil
 	default:
@@ -60,6 +86,9 @@ func (pg *pgWire) handleSSLRequest() ([]byte, error) {
 func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	query := msg.String
 	infoLog.Printf("received sql query: %s\n", query)
+
+	// Simple Query closes the unnamed statement and portal.
+	pg.session.clearUnnamed()
 
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" || trimmed == ";" {

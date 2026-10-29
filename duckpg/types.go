@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -54,6 +55,56 @@ var duckdbTypeNameToPgMeta = map[string]pgTypeMeta{
 }
 
 const pgVarHdrSize = 4
+
+// duckdbTypeToPgMeta maps duckdb.Type enum values to PostgreSQL OID and typlen.
+var duckdbTypeToPgMeta = map[duckdb.Type]pgTypeMeta{
+	duckdb.TYPE_BOOLEAN:      {OID: pgtype.BoolOID, Size: 1},
+	duckdb.TYPE_TINYINT:      {OID: pgtype.Int2OID, Size: 2},
+	duckdb.TYPE_SMALLINT:     {OID: pgtype.Int2OID, Size: 2},
+	duckdb.TYPE_INTEGER:      {OID: pgtype.Int4OID, Size: 4},
+	duckdb.TYPE_BIGINT:       {OID: pgtype.Int8OID, Size: 8},
+	duckdb.TYPE_UTINYINT:     {OID: pgtype.Int2OID, Size: 2},
+	duckdb.TYPE_USMALLINT:    {OID: pgtype.Int4OID, Size: 4},
+	duckdb.TYPE_UINTEGER:     {OID: pgtype.Int8OID, Size: 8},
+	duckdb.TYPE_UBIGINT:      {OID: pgtype.NumericOID, Size: -1},
+	duckdb.TYPE_FLOAT:        {OID: pgtype.Float4OID, Size: 4},
+	duckdb.TYPE_DOUBLE:       {OID: pgtype.Float8OID, Size: 8},
+	duckdb.TYPE_TIMESTAMP:    {OID: pgtype.TimestampOID, Size: 8},
+	duckdb.TYPE_TIMESTAMP_S:  {OID: pgtype.TimestampOID, Size: 8},
+	duckdb.TYPE_TIMESTAMP_MS: {OID: pgtype.TimestampOID, Size: 8},
+	duckdb.TYPE_TIMESTAMP_NS: {OID: pgtype.TimestampOID, Size: 8},
+	duckdb.TYPE_DATE:         {OID: pgtype.DateOID, Size: 4},
+	duckdb.TYPE_TIME:         {OID: pgtype.TimeOID, Size: 8},
+	duckdb.TYPE_TIME_TZ:      {OID: pgtype.TimetzOID, Size: 12},
+	duckdb.TYPE_TIMESTAMP_TZ: {OID: pgtype.TimestamptzOID, Size: 8},
+	duckdb.TYPE_INTERVAL:     {OID: pgtype.IntervalOID, Size: 16},
+	duckdb.TYPE_HUGEINT:      {OID: pgtype.NumericOID, Size: -1},
+	duckdb.TYPE_UHUGEINT:     {OID: pgtype.NumericOID, Size: -1},
+	duckdb.TYPE_VARCHAR:      {OID: pgtype.TextOID, Size: -1},
+	duckdb.TYPE_BLOB:         {OID: pgtype.ByteaOID, Size: -1},
+	duckdb.TYPE_DECIMAL:      {OID: pgtype.NumericOID, Size: -1},
+	duckdb.TYPE_ENUM:         {OID: pgtype.TextOID, Size: -1},
+	duckdb.TYPE_LIST:         {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_STRUCT:       {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_MAP:          {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_ARRAY:        {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_UUID:         {OID: pgtype.UUIDOID, Size: 16},
+	duckdb.TYPE_UNION:        {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_BIT:          {OID: pgtype.BitOID, Size: -1},
+	duckdb.TYPE_BIGNUM:       {OID: pgtype.NumericOID, Size: -1},
+	duckdb.TYPE_GEOMETRY:     {OID: pgtype.TextOID, Size: -1},
+	duckdb.TYPE_VARIANT:      {OID: pgtype.JSONOID, Size: -1},
+	duckdb.TYPE_SQLNULL:      {OID: pgtype.TextOID, Size: -1},
+	duckdb.TYPE_ANY:          {OID: 0, Size: -1},
+	duckdb.TYPE_INVALID:      {OID: 0, Size: -1},
+}
+
+func resolvePgTypeFromDuckdbType(t duckdb.Type) (oid uint32, size int16, typmod int32) {
+	if meta, ok := duckdbTypeToPgMeta[t]; ok {
+		return meta.OID, meta.Size, -1
+	}
+	return pgtype.TextOID, -1, -1
+}
 
 // resolvePgType maps a DuckDB column DatabaseTypeName to PostgreSQL OID, size, and typmod.
 func resolvePgType(dbTypeName string) (oid uint32, size int16, typmod int32) {

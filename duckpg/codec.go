@@ -283,3 +283,27 @@ func encodeBackendKeyData(buf []byte, processID uint32, secretKey []byte) ([]byt
 func encodeParameterStatus(buf []byte, name, value string) ([]byte, error) {
 	return (&pgproto3.ParameterStatus{Name: name, Value: value}).Encode(buf)
 }
+
+func encodeParseComplete(buf []byte) ([]byte, error) {
+	return (&pgproto3.ParseComplete{}).Encode(buf)
+}
+
+func encodeBindComplete(buf []byte) ([]byte, error) {
+	return (&pgproto3.BindComplete{}).Encode(buf)
+}
+
+func encodeCloseComplete(buf []byte) ([]byte, error) {
+	return (&pgproto3.CloseComplete{}).Encode(buf)
+}
+
+func encodeNoData(buf []byte) ([]byte, error) {
+	return (&pgproto3.NoData{}).Encode(buf)
+}
+
+func encodeParameterDescription(buf []byte, oids []uint32) ([]byte, error) {
+	return (&pgproto3.ParameterDescription{ParameterOIDs: oids}).Encode(buf)
+}
+
+func encodeRowDescriptionFields(buf []byte, fields []pgproto3.FieldDescription) ([]byte, error) {
+	return (&pgproto3.RowDescription{Fields: fields}).Encode(buf)
+}

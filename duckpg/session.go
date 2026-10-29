@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 var nextBackendPID atomic.Uint32
@@ -16,12 +18,32 @@ func init() {
 	nextBackendPID.Store(1000)
 }
 
+// preparedStmt is a parsed statement retained for the extended query protocol.
+type preparedStmt struct {
+	name      string
+	query     string
+	paramOIDs []uint32
+	fields    []pgproto3.FieldDescription // nil means no result columns (NoData)
+}
+
+// portal is a bound statement ready for Execute.
+type portal struct {
+	name          string
+	stmt          *preparedStmt
+	args          []any
+	resultFormats []int16
+	described     bool // RowDescription already sent for this portal
+}
+
 // session holds per-client DuckDB connection state.
 type session struct {
-	conn      *sql.Conn
-	txStatus  byte // 'I' idle, 'T' in transaction, 'E' failed transaction
-	processID uint32
-	secretKey []byte // 4-byte classic cancel key
+	conn            *sql.Conn
+	txStatus        byte // 'I' idle, 'T' in transaction, 'E' failed transaction
+	processID       uint32
+	secretKey       []byte // 4-byte classic cancel key
+	statements      map[string]*preparedStmt
+	portals         map[string]*portal
+	ignoreUntilSync bool
 }
 
 func newSession(db *sql.DB) (*session, error) {
@@ -30,21 +52,31 @@ func newSession(db *sql.DB) (*session, error) {
 		return nil, err
 	}
 	s := &session{
-		conn:      conn,
-		txStatus:  'I',
-		processID: nextBackendPID.Add(1),
-		secretKey: randomSecretKey(),
+		conn:       conn,
+		txStatus:   'I',
+		processID:  nextBackendPID.Add(1),
+		secretKey:  randomSecretKey(),
+		statements: make(map[string]*preparedStmt),
+		portals:    make(map[string]*portal),
 	}
 	return s, nil
 }
 
 func (s *session) close() error {
+	s.statements = nil
+	s.portals = nil
 	if s.conn == nil {
 		return nil
 	}
 	err := s.conn.Close()
 	s.conn = nil
 	return err
+}
+
+// clearUnnamed drops the unnamed prepared statement and portal (simple Query rule).
+func (s *session) clearUnnamed() {
+	delete(s.statements, "")
+	delete(s.portals, "")
 }
 
 func randomSecretKey() []byte {
