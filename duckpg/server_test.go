@@ -10,11 +10,15 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/zeebo/assert"
 )
 
 func startTestServer(t *testing.T) (addr string, cleanup func()) {
+	t.Helper()
+	return startConfiguredServer(t, Config{})
+}
+
+func startConfiguredServer(t *testing.T, cfg Config) (addr string, cleanup func()) {
 	t.Helper()
 
 	db, err := sql.Open("duckdb", "")
@@ -31,20 +35,7 @@ func startTestServer(t *testing.T) (addr string, cleanup func()) {
 			if err != nil {
 				return
 			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				sess, err := newSession(db)
-				if err != nil {
-					return
-				}
-				defer sess.close()
-				pg := &pgWire{
-					conn:    conn,
-					backend: pgproto3.NewBackend(conn, conn),
-					session: sess,
-				}
-				_ = pg.run()
-			}(conn)
+			go serve(conn, db, cfg)
 		}
 	}()
 

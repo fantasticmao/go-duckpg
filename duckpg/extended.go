@@ -51,12 +51,14 @@ func (pg *pgWire) inspectPrepare(query string, clientParamOIDs []uint32) (*prepa
 	}
 
 	var ps *preparedStmt
+	ctx, stop := pg.session.queryContext()
+	defer stop()
 	err := pg.session.conn.Raw(func(driverConn any) error {
 		dc, ok := driverConn.(*duckdb.Conn)
 		if !ok {
 			return fmt.Errorf("unexpected driver connection type %T", driverConn)
 		}
-		stmt, err := dc.PrepareContext(context.Background(), query)
+		stmt, err := dc.PrepareContext(ctx, query)
 		if err != nil {
 			return err
 		}
@@ -321,7 +323,8 @@ func (pg *pgWire) handleExecute(msg *pgproto3.Execute) ([]byte, error) {
 	if !ok {
 		return pg.extendedError(fmt.Errorf(`portal "%s" does not exist`, msg.Portal))
 	}
-	ctx := context.Background()
+	ctx, stop := pg.session.queryContext()
+	defer stop()
 	if len(p.stmt.fields) == 0 {
 		return pg.executePortalExec(ctx, p)
 	}

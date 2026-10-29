@@ -3,16 +3,22 @@ package duckpg
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
 var nextBackendPID atomic.Uint32
+
+// liveSessions maps BackendKeyData process IDs to sessions so a CancelRequest
+// on a separate connection can interrupt the matching query.
+var liveSessions sync.Map
 
 func init() {
 	nextBackendPID.Store(1000)
@@ -47,6 +53,8 @@ type session struct {
 	portals         map[string]*portal
 	ignoreUntilSync bool
 	settings        map[string]string // lowercase PostgreSQL GUC name → session value
+	mu              sync.Mutex
+	cancelQuery     context.CancelFunc
 }
 
 func newSession(db *sql.DB) (*session, error) {
@@ -67,6 +75,7 @@ func newSession(db *sql.DB) (*session, error) {
 }
 
 func (s *session) close() error {
+	s.interrupt()
 	s.statements = nil
 	s.portals = nil
 	if s.conn == nil {
@@ -75,6 +84,51 @@ func (s *session) close() error {
 	err := s.conn.Close()
 	s.conn = nil
 	return err
+}
+
+func registerSession(s *session) {
+	liveSessions.Store(s.processID, s)
+}
+
+func unregisterSession(s *session) {
+	liveSessions.Delete(s.processID)
+}
+
+// cancelBackend interrupts the session identified by a CancelRequest.
+// A mismatched secret is ignored. The cancel connection itself sends no reply.
+func cancelBackend(processID uint32, secret []byte) {
+	v, ok := liveSessions.Load(processID)
+	if !ok {
+		return
+	}
+	s := v.(*session)
+	if subtle.ConstantTimeCompare(s.secretKey, secret) != 1 {
+		return
+	}
+	s.interrupt()
+}
+
+// queryContext is canceled when a matching CancelRequest arrives.
+func (s *session) queryContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.cancelQuery = cancel
+	s.mu.Unlock()
+	return ctx, func() {
+		cancel()
+		s.mu.Lock()
+		s.cancelQuery = nil
+		s.mu.Unlock()
+	}
+}
+
+func (s *session) interrupt() {
+	s.mu.Lock()
+	cancel := s.cancelQuery
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // clearUnnamed drops the unnamed prepared statement and portal (simple Query rule).

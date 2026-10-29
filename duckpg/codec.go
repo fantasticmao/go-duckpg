@@ -256,13 +256,20 @@ func encodeReadyForQuery(buf []byte, txStatus byte) ([]byte, error) {
 }
 
 func encodeErrorResponse(buf []byte, err error) ([]byte, error) {
-	msg := err.Error()
+	return encodeErrorResponseStatus(buf, "ERROR", "XX000", err.Error())
+}
+
+func encodeErrorResponseStatus(buf []byte, severity, code, message string) ([]byte, error) {
 	return (&pgproto3.ErrorResponse{
-		Severity:            "ERROR",
-		SeverityUnlocalized: "ERROR",
-		Code:                "XX000",
-		Message:             msg,
+		Severity:            severity,
+		SeverityUnlocalized: severity,
+		Code:                code,
+		Message:             message,
 	}).Encode(buf)
+}
+
+func encodeAuthenticationCleartextPassword(buf []byte) ([]byte, error) {
+	return (&pgproto3.AuthenticationCleartextPassword{}).Encode(buf)
 }
 
 func encodeEmptyQueryResponse(buf []byte) ([]byte, error) {

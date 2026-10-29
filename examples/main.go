@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/fantasticmao/go-duckpg/duckpg"
 )
@@ -13,7 +14,10 @@ func main() {
 	err = db.Ping()
 	checkError(err)
 
-	err = duckpg.Startup(db, ":15432")
+	err = duckpg.Listen(db, ":15432", duckpg.Config{
+		Password: "123456",
+		TLS:      nil,
+	})
 	checkError(err)
 }
 

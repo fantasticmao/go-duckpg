@@ -79,10 +79,6 @@ func (pg *pgWire) handleStartupMessage(_ *pgproto3.StartupMessage) ([]byte, erro
 	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
-func (pg *pgWire) handleSSLRequest() ([]byte, error) {
-	return []byte{'N'}, nil
-}
-
 func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	query := msg.String
 	infoLog.Printf("received sql query: %s\n", query)
@@ -103,7 +99,8 @@ func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 }
 
 func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
-	ctx := context.Background()
+	ctx, stop := pg.session.queryContext()
+	defer stop()
 	class := classifyCompat(query, pg.session)
 	switch class.kind {
 	case compatLocal:
