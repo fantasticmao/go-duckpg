@@ -1,83 +1,163 @@
 package duckpg
 
 import (
-	"database/sql"
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgproto3"
-	"reflect"
-	"sync"
 )
 
-// handlerMapping maps message types to their respective handlers.
-var handlerMapping = map[reflect.Type]func(msg pgproto3.FrontendMessage) ([]byte, error){
-	reflect.TypeFor[*pgproto3.StartupMessage](): handleStartupMessage,
-	reflect.TypeFor[*pgproto3.SSLRequest]():     handleSSLRequest,
-	reflect.TypeFor[*pgproto3.Query]():          handleQuery,
-	reflect.TypeFor[*pgproto3.Terminate]():      handleTerminate,
+func (pg *pgWire) dispatch(msg pgproto3.FrontendMessage) ([]byte, error) {
+	switch m := msg.(type) {
+	case *pgproto3.Query:
+		return pg.handleQuery(m)
+	case *pgproto3.Terminate:
+		return nil, nil
+	default:
+		buf, err := encodeErrorResponse(nil, fmt.Errorf("unsupported frontend message: %T", msg))
+		if err != nil {
+			return nil, err
+		}
+		return encodeReadyForQuery(buf, pg.session.txStatus)
+	}
 }
 
-// database is the global database connection used by the message handlers.
-var database *sql.DB
-
-// databaseInitOnce ensures that the database connection is initialized only once.
-var databaseInitOnce = sync.Once{}
-
-func initDatabase(db *sql.DB) {
-	databaseInitOnce.Do(func() {
-		database = db
-	})
-}
-
-func handleStartupMessage(msg pgproto3.FrontendMessage) ([]byte, error) {
-	buf, err := (&pgproto3.AuthenticationOk{}).Encode(nil)
+func (pg *pgWire) handleStartupMessage(_ *pgproto3.StartupMessage) ([]byte, error) {
+	buf, err := encodeAuthenticationOk(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	buf, err = (&pgproto3.ReadyForQuery{TxStatus: 'I'}).Encode(buf)
+	params := [][2]string{
+		{"server_version", "15.0"},
+		{"server_encoding", "UTF8"},
+		{"client_encoding", "UTF8"},
+		{"DateStyle", "ISO, MDY"},
+		{"TimeZone", "UTC"},
+		{"integer_datetimes", "on"},
+		{"standard_conforming_strings", "on"},
+	}
+	for _, p := range params {
+		buf, err = encodeParameterStatus(buf, p[0], p[1])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	buf, err = encodeBackendKeyData(buf, pg.session.processID, pg.session.secretKey)
 	if err != nil {
 		return nil, err
 	}
-	return buf, nil
+
+	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
-func handleSSLRequest(msg pgproto3.FrontendMessage) ([]byte, error) {
-	buf := []byte("N")
-	return buf, nil
+func (pg *pgWire) handleSSLRequest() ([]byte, error) {
+	return []byte{'N'}, nil
 }
 
-func handleQuery(msg pgproto3.FrontendMessage) ([]byte, error) {
-	query := msg.(*pgproto3.Query).String
+func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
+	query := msg.String
 	infoLog.Printf("received sql query: %s\n", query)
 
-	rows, err := database.Query(query)
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" || trimmed == ";" {
+		buf, err := encodeEmptyQueryResponse(nil)
+		if err != nil {
+			return nil, err
+		}
+		return encodeReadyForQuery(buf, pg.session.txStatus)
+	}
+
+	return pg.executeSimpleQuery(query)
+}
+
+func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
+	ctx := context.Background()
+
+	if prefersExec(query) {
+		return pg.executeExec(ctx, query)
+	}
+	return pg.executeQuery(ctx, query)
+}
+
+func prefersExec(query string) bool {
+	switch firstSQLKeyword(query) {
+	case "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "TRUNCATE",
+		"BEGIN", "START", "COMMIT", "ROLLBACK", "ABORT",
+		"SET", "RESET", "ATTACH", "DETACH", "LOAD", "INSTALL",
+		"COPY", "ANALYZE", "VACUUM", "CHECKPOINT", "USE", "GRANT", "REVOKE":
+		return true
+	default:
+		return false
+	}
+}
+
+func (pg *pgWire) executeExec(ctx context.Context, query string) ([]byte, error) {
+	result, err := pg.session.conn.ExecContext(ctx, query)
+	if err != nil {
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+		buf, encErr := encodeErrorResponse(nil, err)
+		if encErr != nil {
+			return nil, encErr
+		}
+		return encodeReadyForQuery(buf, pg.session.txStatus)
+	}
+
+	rowsAffected := int64(0)
+	if n, raErr := result.RowsAffected(); raErr == nil {
+		rowsAffected = n
+	}
+
+	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
+	tag := commandTag(query, false, 0, rowsAffected)
+
+	buf, err := encodeCommandComplete(nil, tag)
 	if err != nil {
 		return nil, err
+	}
+	return encodeReadyForQuery(buf, pg.session.txStatus)
+}
+
+func (pg *pgWire) executeQuery(ctx context.Context, query string) ([]byte, error) {
+	rows, err := pg.session.conn.QueryContext(ctx, query)
+	if err != nil {
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+		buf, encErr := encodeErrorResponse(nil, err)
+		if encErr != nil {
+			return nil, encErr
+		}
+		return encodeReadyForQuery(buf, pg.session.txStatus)
 	}
 	defer rows.Close()
 
-	buf, colLen, err := encodeRowDescription(nil, rows)
+	buf, oids, err := encodeRowDescription(nil, rows)
 	if err != nil {
-		return buf, err
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+		ebuf, encErr := encodeErrorResponse(nil, err)
+		if encErr != nil {
+			return nil, encErr
+		}
+		return encodeReadyForQuery(ebuf, pg.session.txStatus)
 	}
 
-	buf, rowCnt, err := encodeDataRow(buf, rows, colLen)
+	buf, rowCnt, err := encodeDataRow(buf, rows, oids)
 	if err != nil {
-		return buf, err
+		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+		ebuf, encErr := encodeErrorResponse(nil, err)
+		if encErr != nil {
+			return nil, encErr
+		}
+		return encodeReadyForQuery(ebuf, pg.session.txStatus)
 	}
 
-	buf, err = encodeCommandComplete(buf, rowCnt)
+	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
+	tag := commandTag(query, true, int64(rowCnt), -1)
+
+	buf, err = encodeCommandComplete(buf, tag)
 	if err != nil {
-		return buf, err
+		return nil, err
 	}
-
-	buf, err = encodeReadyForQuery(buf)
-	if err != nil {
-		return buf, err
-	}
-
-	return buf, nil
-}
-
-func handleTerminate(msg pgproto3.FrontendMessage) ([]byte, error) {
-	return nil, nil
+	return encodeReadyForQuery(buf, pg.session.txStatus)
 }

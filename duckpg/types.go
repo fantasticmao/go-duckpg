@@ -1,77 +1,114 @@
 package duckpg
 
 import (
-	"github.com/duckdb/duckdb-go/v2"
+	"strconv"
+	"strings"
+
 	"github.com/jackc/pgx/v5/pgtype"
-	"math/big"
-	"reflect"
-	"time"
 )
 
-var goTypeToDuckdbTypeMap = map[reflect.Type]duckdb.Type{
-	nil:                               duckdb.TYPE_INVALID,
-	reflect.TypeOf(true):              duckdb.TYPE_BOOLEAN,
-	reflect.TypeOf(int8(0)):           duckdb.TYPE_TINYINT,
-	reflect.TypeOf(int16(0)):          duckdb.TYPE_SMALLINT,
-	reflect.TypeOf(int32(0)):          duckdb.TYPE_INTEGER,
-	reflect.TypeOf(int64(0)):          duckdb.TYPE_BIGINT,
-	reflect.TypeOf(uint8(0)):          duckdb.TYPE_UTINYINT,
-	reflect.TypeOf(uint16(0)):         duckdb.TYPE_USMALLINT,
-	reflect.TypeOf(uint32(0)):         duckdb.TYPE_UINTEGER,
-	reflect.TypeOf(uint64(0)):         duckdb.TYPE_UBIGINT,
-	reflect.TypeOf(float32(0)):        duckdb.TYPE_FLOAT,
-	reflect.TypeOf(float64(0)):        duckdb.TYPE_DOUBLE,
-	reflect.TypeOf(time.Time{}):       duckdb.TYPE_TIMESTAMP_NS,
-	reflect.TypeOf(duckdb.Interval{}): duckdb.TYPE_INTERVAL,
-	reflect.TypeOf(big.NewInt(0)):     duckdb.TYPE_HUGEINT,
-	reflect.TypeOf(""):                duckdb.TYPE_VARCHAR,
-	//reflect.TypeOf(""):                duckdb.TYPE_ENUM,
-	reflect.TypeOf([]byte{}):         duckdb.TYPE_BLOB,
-	reflect.TypeOf(duckdb.Decimal{}): duckdb.TYPE_DECIMAL,
-	reflect.TypeOf([]any{}):          duckdb.TYPE_LIST,
-	reflect.TypeOf(map[string]any{}): duckdb.TYPE_STRUCT,
-	reflect.TypeOf(duckdb.Map{}):     duckdb.TYPE_MAP,
-	//reflect.TypeOf([]any{}):           duckdb.TYPE_ARRAY,
-	reflect.TypeOf(duckdb.Union{}): duckdb.TYPE_UNION,
-	reflect.TypeOf([]byte{}):       duckdb.TYPE_UUID,
+// pgTypeMeta describes how a DuckDB column is advertised to PostgreSQL clients.
+type pgTypeMeta struct {
+	OID  uint32
+	Size int16 // typlen; -1 for variable-length
 }
 
-var duckdbTypeToPgOidMap = map[duckdb.Type]uint32{
-	duckdb.TYPE_INVALID:      pgtype.Int2OID,
-	duckdb.TYPE_BOOLEAN:      pgtype.Int2OID,
-	duckdb.TYPE_TINYINT:      pgtype.Int2OID,
-	duckdb.TYPE_SMALLINT:     pgtype.Int2OID,
-	duckdb.TYPE_INTEGER:      pgtype.Int2OID,
-	duckdb.TYPE_BIGINT:       pgtype.Int8OID,
-	duckdb.TYPE_UTINYINT:     pgtype.Int8OID,
-	duckdb.TYPE_USMALLINT:    pgtype.Int2OID,
-	duckdb.TYPE_UINTEGER:     pgtype.Int2OID,
-	duckdb.TYPE_UBIGINT:      pgtype.Int2OID,
-	duckdb.TYPE_FLOAT:        pgtype.Int2OID,
-	duckdb.TYPE_DOUBLE:       pgtype.Int2OID,
-	duckdb.TYPE_TIMESTAMP:    pgtype.Int2OID,
-	duckdb.TYPE_DATE:         pgtype.Int2OID,
-	duckdb.TYPE_TIME:         pgtype.Int2OID,
-	duckdb.TYPE_INTERVAL:     pgtype.Int2OID,
-	duckdb.TYPE_HUGEINT:      pgtype.Int2OID,
-	duckdb.TYPE_UHUGEINT:     pgtype.Int2OID,
-	duckdb.TYPE_VARCHAR:      pgtype.TextOID,
-	duckdb.TYPE_BLOB:         pgtype.Int2OID,
-	duckdb.TYPE_DECIMAL:      pgtype.Int2OID,
-	duckdb.TYPE_TIMESTAMP_S:  pgtype.Int2OID,
-	duckdb.TYPE_TIMESTAMP_MS: pgtype.Int2OID,
-	duckdb.TYPE_TIMESTAMP_NS: pgtype.Int2OID,
-	duckdb.TYPE_ENUM:         pgtype.TextOID,
-	duckdb.TYPE_LIST:         pgtype.JSONOID,
-	duckdb.TYPE_STRUCT:       pgtype.JSONOID,
-	duckdb.TYPE_MAP:          pgtype.JSONOID,
-	duckdb.TYPE_ARRAY:        pgtype.Int2OID,
-	duckdb.TYPE_UUID:         pgtype.Int2OID,
-	duckdb.TYPE_UNION:        pgtype.Int2OID,
-	duckdb.TYPE_BIT:          pgtype.Int2OID,
-	duckdb.TYPE_TIME_TZ:      pgtype.Int2OID,
-	duckdb.TYPE_TIMESTAMP_TZ: pgtype.Int2OID,
-	duckdb.TYPE_ANY:          pgtype.Int2OID,
-	duckdb.TYPE_BIGNUM:       pgtype.Int2OID,
-	duckdb.TYPE_SQLNULL:      pgtype.Int2OID,
+// duckdbTypeNameToPgMeta maps DuckDB DatabaseTypeName() base names to PG OIDs.
+// Names without a natural PG counterpart use the nearest compatible type:
+// unsigned integers and hugeints → numeric (text-safe for large values).
+var duckdbTypeNameToPgMeta = map[string]pgTypeMeta{
+	"BOOLEAN":      {OID: pgtype.BoolOID, Size: 1},
+	"TINYINT":      {OID: pgtype.Int2OID, Size: 2},
+	"SMALLINT":     {OID: pgtype.Int2OID, Size: 2},
+	"INTEGER":      {OID: pgtype.Int4OID, Size: 4},
+	"BIGINT":       {OID: pgtype.Int8OID, Size: 8},
+	"UTINYINT":     {OID: pgtype.Int2OID, Size: 2},
+	"USMALLINT":    {OID: pgtype.Int4OID, Size: 4},
+	"UINTEGER":     {OID: pgtype.Int8OID, Size: 8},
+	"UBIGINT":      {OID: pgtype.NumericOID, Size: -1}, // may exceed int8
+	"FLOAT":        {OID: pgtype.Float4OID, Size: 4},
+	"DOUBLE":       {OID: pgtype.Float8OID, Size: 8},
+	"TIMESTAMP":    {OID: pgtype.TimestampOID, Size: 8},
+	"TIMESTAMP_S":  {OID: pgtype.TimestampOID, Size: 8},
+	"TIMESTAMP_MS": {OID: pgtype.TimestampOID, Size: 8},
+	"TIMESTAMP_NS": {OID: pgtype.TimestampOID, Size: 8},
+	"DATE":         {OID: pgtype.DateOID, Size: 4},
+	"TIME":         {OID: pgtype.TimeOID, Size: 8},
+	"TIMETZ":       {OID: pgtype.TimetzOID, Size: 12},
+	"TIMESTAMPTZ":  {OID: pgtype.TimestamptzOID, Size: 8},
+	"INTERVAL":     {OID: pgtype.IntervalOID, Size: 16},
+	"HUGEINT":      {OID: pgtype.NumericOID, Size: -1},
+	"UHUGEINT":     {OID: pgtype.NumericOID, Size: -1},
+	"VARCHAR":      {OID: pgtype.TextOID, Size: -1},
+	"BLOB":         {OID: pgtype.ByteaOID, Size: -1},
+	"BIT":          {OID: pgtype.BitOID, Size: -1},
+	"UUID":         {OID: pgtype.UUIDOID, Size: 16},
+	"JSON":         {OID: pgtype.JSONOID, Size: -1},
+	"ENUM":         {OID: pgtype.TextOID, Size: -1},
+	"BIGNUM":       {OID: pgtype.NumericOID, Size: -1},
+	"GEOMETRY":     {OID: pgtype.TextOID, Size: -1},
+	"VARIANT":      {OID: pgtype.JSONOID, Size: -1},
+	"SQLNULL":      {OID: pgtype.TextOID, Size: -1},
+	"ANY":          {OID: pgtype.TextOID, Size: -1},
+}
+
+const pgVarHdrSize = 4
+
+// resolvePgType maps a DuckDB column DatabaseTypeName to PostgreSQL OID, size, and typmod.
+func resolvePgType(dbTypeName string) (oid uint32, size int16, typmod int32) {
+	name := strings.TrimSpace(dbTypeName)
+	upper := strings.ToUpper(name)
+
+	if strings.HasPrefix(upper, "DECIMAL") || strings.HasPrefix(upper, "NUMERIC") {
+		prec, scale := parseDecimalParams(upper)
+		typmod = int32(((prec << 16) | scale) + pgVarHdrSize)
+		return pgtype.NumericOID, -1, typmod
+	}
+
+	base := upper
+	if i := strings.IndexByte(upper, '('); i >= 0 {
+		base = upper[:i]
+	}
+	if i := strings.IndexByte(base, '['); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSpace(base)
+
+	switch {
+	case strings.HasPrefix(base, "LIST") || strings.HasPrefix(upper, "LIST") ||
+		strings.HasPrefix(base, "ARRAY") || strings.Contains(upper, "[]"):
+		return pgtype.JSONOID, -1, -1
+	case strings.HasPrefix(base, "STRUCT") || strings.HasPrefix(upper, "STRUCT"):
+		return pgtype.JSONOID, -1, -1
+	case strings.HasPrefix(base, "MAP") || strings.HasPrefix(upper, "MAP"):
+		return pgtype.JSONOID, -1, -1
+	case strings.HasPrefix(base, "UNION") || strings.HasPrefix(upper, "UNION"):
+		return pgtype.JSONOID, -1, -1
+	}
+
+	if meta, ok := duckdbTypeNameToPgMeta[base]; ok {
+		return meta.OID, meta.Size, -1
+	}
+	return pgtype.TextOID, -1, -1
+}
+
+func parseDecimalParams(upper string) (prec, scale int) {
+	prec, scale = 18, 3 // DuckDB defaults when unspecified
+	start := strings.IndexByte(upper, '(')
+	end := strings.IndexByte(upper, ')')
+	if start < 0 || end <= start+1 {
+		return prec, scale
+	}
+	parts := strings.Split(upper[start+1:end], ",")
+	if len(parts) >= 1 {
+		if p, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil {
+			prec = p
+		}
+	}
+	if len(parts) >= 2 {
+		if s, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+			scale = s
+		}
+	}
+	return prec, scale
 }
