@@ -9,20 +9,22 @@ README [English](README.md) | [中文](README_ZH.md)
 
 ## What is this
 
-go-duckpg serves a caller-supplied DuckDB database over the PostgreSQL wire protocol, without the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password.
+go-duckpg is a Go-language library that implements the wire protocol of [PostgreSQL](https://www.postgresql.org/) for [DuckDB](https://duckdb.org/). PostgreSQL clients query a caller-supplied DuckDB database through that endpoint, and the library does not implement the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password.
+
+![usage.png](docs/usage.png)
 
 The library version is [v1.0.0](VERSION). On the wire, go-duckpg advertises `server_version` as `15.0` and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
 
 ## Features
 
-- **Simple Query** — executes one SQL string and returns rows or a command completion tag.
-- **Extended Query** — accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
-- **Pooled session** — holds one DuckDB connection from the pool for the life of each socket.
-- **Cleartext auth** — checks a cleartext password when one is set, and accepts every client when it is empty.
-- **Optional TLS** — completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
-- **Query cancel** — interrupts the running statement when `CancelRequest` carries the matching secret.
-- **Session compat** — stores settings DuckDB 2.0 rejects, and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
-- **Type mapping** — advertises each DuckDB column as the nearest PostgreSQL type, in text or supported binary.
+- **Simple Query**: executes one SQL string and returns rows or a command completion tag.
+- **Extended Query**: accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
+- **Pooled session**: holds one DuckDB connection from the pool for the life of each socket.
+- **Cleartext auth**: checks a cleartext password when one is set, and accepts every client when it is empty.
+- **Optional TLS**: completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
+- **Query cancel**: interrupts the running statement when `CancelRequest` carries the matching secret.
+- **Session compat**: stores settings DuckDB 2.0 rejects, and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
+- **Type mapping**: advertises each DuckDB column as the nearest PostgreSQL type, in text or supported binary.
 
 ## Download and Install
 
@@ -30,8 +32,8 @@ The library version is [v1.0.0](VERSION). On the wire, go-duckpg advertises `ser
 go get github.com/fantasticmao/go-duckpg
 ```
 
-- **Go toolchain** — building and running the module requires Go 1.26.
-- **Native builds** — the DuckDB driver ships `libduckdb` for darwin and linux on amd64 and arm64, and for windows on amd64.
+- **Go toolchain**: building and running the module requires Go 1.26.
+- **Native builds**: the DuckDB driver ships `libduckdb` for darwin and linux on amd64 and arm64, and for windows on amd64.
 
 ## Quick Start
 
@@ -84,10 +86,10 @@ go-duckpg separates connection handling, session state, statement compatibility,
 
 ### Architecture
 
-- **Wire server** — accepts TCP sockets, finishes startup, and dispatches each frontend message.
-- **Client session** — keeps the DuckDB connection, prepared statements, bound portals, transaction status, and cancel key.
-- **Compatibility** — passes a statement through, answers it from session state, or rewrites it before execution.
-- **Type codec** — maps each DuckDB column to a PostgreSQL OID and encodes the value as text or binary.
+- **Wire server**: accepts TCP sockets, finishes startup, and dispatches each frontend message.
+- **Client session**: keeps the DuckDB connection, prepared statements, bound portals, transaction status, and cancel key.
+- **Compatibility**: passes a statement through, answers it from session state, or rewrites it before execution.
+- **Type codec**: maps each DuckDB column to a PostgreSQL OID and encodes the value as text or binary.
 
 ### Core flow
 

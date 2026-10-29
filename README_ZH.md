@@ -9,20 +9,22 @@ README [English](README.md) | [中文](README_ZH.md)
 
 ## 这是什么
 
-go-duckpg 通过 PostgreSQL 线协议提供调用方传入的 DuckDB 数据库，不实现 PostgreSQL 的 SQL 方言、系统目录，以及明文密码以外的认证方式。
+go-duckpg 是一个 Go 语言的库，它为 [DuckDB](https://duckdb.org/) 实现 [PostgreSQL](https://www.postgresql.org/) 的线协议。PostgreSQL 客户端通过该端点查询调用方提供的 DuckDB 数据库，该库不实现 PostgreSQL 的 SQL 方言、系统目录，以及明文密码以外的认证方式。
+
+![usage.png](docs/usage.png)
 
 库版本为 [v1.0.0](VERSION)。在线协议上，go-duckpg 将 `server_version` 通告为 `15.0`，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
 
 ## 功能
 
-- **简单查询** — 执行一条 SQL，并返回结果行或命令完成标签。
-- **扩展查询** — 接受 Parse、Bind、Describe、Execute、Close、Sync 与 Flush。
-- **池化会话** — 在每个套接字存续期间持有一条来自连接池的 DuckDB 连接。
-- **明文认证** — 配置了密码时校验明文密码，密码为空时接受任意客户端。
-- **可选 TLS** — `TLS` 已设置时完成 `SSLRequest`，为 nil 时回答 `N`，并拒绝 `GSSEncRequest`。
-- **查询取消** — 当 `CancelRequest` 携带匹配的密钥时，中断正在执行的语句。
-- **会话兼容** — 保存 DuckDB 2.0 会拒绝的设置，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
-- **类型映射** — 将每个 DuckDB 列通告为最接近的 PostgreSQL 类型，使用文本或受支持的二进制格式。
+- **简单查询**： 执行一条 SQL，并返回结果行或命令完成标签。
+- **扩展查询**： 接受 Parse、Bind、Describe、Execute、Close、Sync 与 Flush。
+- **池化会话**： 在每个套接字存续期间持有一条来自连接池的 DuckDB 连接。
+- **明文认证**： 配置了密码时校验明文密码，密码为空时接受任意客户端。
+- **可选 TLS**： `TLS` 已设置时完成 `SSLRequest`，为 nil 时回答 `N`，并拒绝 `GSSEncRequest`。
+- **查询取消**： 当 `CancelRequest` 携带匹配的密钥时，中断正在执行的语句。
+- **会话兼容**： 保存 DuckDB 2.0 会拒绝的设置，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
+- **类型映射**： 将每个 DuckDB 列通告为最接近的 PostgreSQL 类型，使用文本或受支持的二进制格式。
 
 ## 下载与安装
 
@@ -30,8 +32,8 @@ go-duckpg 通过 PostgreSQL 线协议提供调用方传入的 DuckDB 数据库�
 go get github.com/fantasticmao/go-duckpg
 ```
 
-- **Go 工具链** — 构建和运行该模块需要 Go 1.26。
-- **原生构建** — DuckDB 驱动为 darwin 与 linux 的 amd64、arm64，以及 windows 的 amd64 提供 `libduckdb`。
+- **Go 工具链**： 构建和运行该模块需要 Go 1.26。
+- **原生构建**： DuckDB 驱动为 darwin 与 linux 的 amd64、arm64，以及 windows 的 amd64 提供 `libduckdb`。
 
 ## 快速开始
 
@@ -84,10 +86,10 @@ go-duckpg 将连接处理、会话状态、语句兼容和值编码分开。
 
 ### 架构
 
-- **线协议服务** — 接受 TCP 套接字，完成启动，并分发每条前端消息。
-- **客户端会话** — 保存 DuckDB 连接、预编译语句、已绑定的 portal、事务状态和取消密钥。
-- **兼容处理** — 放行语句、依据会话状态直接应答，或在执行前改写语句。
-- **类型编码** — 将每个 DuckDB 列映射为 PostgreSQL OID，并以文本或二进制编码该值。
+- **线协议服务**： 接受 TCP 套接字，完成启动，并分发每条前端消息。
+- **客户端会话**： 保存 DuckDB 连接、预编译语句、已绑定的 portal、事务状态和取消密钥。
+- **兼容处理**： 放行语句、依据会话状态直接应答，或在执行前改写语句。
+- **类型编码**： 将每个 DuckDB 列映射为 PostgreSQL OID，并以文本或二进制编码该值。
 
 ### 主流程
 
