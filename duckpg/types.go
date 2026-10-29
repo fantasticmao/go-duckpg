@@ -13,9 +13,10 @@ type pgTypeMeta struct {
 	Size int16 // typlen; -1 for variable-length
 }
 
-// duckdbTypeNameToPgMeta maps DuckDB DatabaseTypeName() base names to PG OIDs.
-// Names without a natural PG counterpart use the nearest compatible type:
-// unsigned integers and hugeints → numeric (text-safe for large values).
+// duckdbTypeNameToPgMeta maps DuckDB DatabaseTypeName() base names to PG OID and typlen.
+// Types without an exact PG counterpart use the nearest compatible type:
+// smaller unsigned ints widen into a signed int that can hold their range;
+// UBIGINT / HUGEINT / UHUGEINT / BIGNUM use numeric (may exceed int8).
 var duckdbTypeNameToPgMeta = map[string]pgTypeMeta{
 	"BOOLEAN":      {OID: pgtype.BoolOID, Size: 1},
 	"TINYINT":      {OID: pgtype.Int2OID, Size: 2},
@@ -93,7 +94,7 @@ func resolvePgType(dbTypeName string) (oid uint32, size int16, typmod int32) {
 }
 
 func parseDecimalParams(upper string) (prec, scale int) {
-	prec, scale = 18, 3 // DuckDB defaults when unspecified
+	prec, scale = 18, 3 // fallback when width/scale are absent (DuckDB DECIMAL default)
 	start := strings.IndexByte(upper, '(')
 	end := strings.IndexByte(upper, ')')
 	if start < 0 || end <= start+1 {

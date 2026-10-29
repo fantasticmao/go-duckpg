@@ -89,9 +89,6 @@ func commandTag(query string, hasResultSet bool, rowCnt int64, rowsAffected int6
 		"CALL", "PRAGMA", "SET", "RESET", "LOAD", "INSTALL", "EXPORT", "IMPORT",
 		"ANALYZE", "VACUUM", "COMMENT", "GRANT", "REVOKE", "PREPARE", "EXECUTE",
 		"DEALLOCATE", "EXPLAIN", "DESCRIBE", "SHOW", "USE", "CHECKPOINT":
-		if kw == "" {
-			break
-		}
 		return kw
 	}
 	if hasResultSet {
@@ -108,7 +105,7 @@ func firstSQLKeyword(query string) string {
 	if s == "" {
 		return ""
 	}
-	// Strip leading single-line comments
+	// Strip leading -- and /* */ comments.
 	for {
 		if strings.HasPrefix(s, "--") {
 			if i := strings.IndexByte(s, '\n'); i >= 0 {

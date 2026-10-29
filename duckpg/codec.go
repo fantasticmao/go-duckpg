@@ -102,7 +102,7 @@ func encodeTextValue(data any, oid uint32) ([]byte, error) {
 	case json.RawMessage:
 		return d, nil
 	default:
-		// Fallback: try JSON, then fmt
+		// Unknown driver value: prefer JSON text, otherwise Go's default formatting.
 		if b, err := json.Marshal(d); err == nil {
 			return b, nil
 		}

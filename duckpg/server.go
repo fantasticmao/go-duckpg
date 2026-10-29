@@ -75,7 +75,7 @@ func (pg *pgWire) run() error {
 			return fmt.Errorf("handle message failed: %w", err)
 		}
 		if buf == nil {
-			// Terminate
+			// Nil buffer means Terminate (or equivalent clean close).
 			return nil
 		}
 
@@ -101,7 +101,7 @@ func (pg *pgWire) handleStartup() error {
 			if _, err = pg.conn.Write(buf); err != nil {
 				return fmt.Errorf("write response buffer error: %w", err)
 			}
-			// Client will send StartupMessage next.
+			// SSL refused; continue reading the next startup packet.
 			continue
 		case *pgproto3.StartupMessage:
 			buf, err := pg.handleStartupMessage(m)
