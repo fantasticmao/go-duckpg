@@ -13,7 +13,7 @@ go-duckpg 是一个 Go 语言的库，它为 [DuckDB](https://duckdb.org/) 实�
 
 ![usage.png](docs/usage.png)
 
-库版本为 [v1.0.0](VERSION)。在线协议上，go-duckpg 将 `server_version` 通告为 `15.0`，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
+库版本为 [v1.0.0-alpha.1](VERSION)。在线协议上，go-duckpg 将 `server_version` 通告为 `15.0`，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
 
 ## 功能
 
@@ -135,6 +135,10 @@ go-duckpg 不读取启动消息中的用户或数据库字段。将 `Password` �
 
 DuckDB 2.0 会拒绝客户端在连接时发送的若干 PostgreSQL 参数。go-duckpg 在会话中保存 `extra_float_digits`、`application_name`、`client_encoding`、`standard_conforming_strings`、`DateStyle`、`TimeZone`、`IntervalStyle` 和 `bytea_output`，并将其余设置（例如 `search_path`）转发给 DuckDB。
 
+## 变更记录
+
+[CHANGELOG.md](CHANGELOG.md)
+
 ## 许可证
 
-go-duckpg 以 [MIT 许可证](LICENSE) 发布。
+[MIT License](LICENSE)

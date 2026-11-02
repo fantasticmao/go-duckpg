@@ -1,4 +1,9 @@
-.PHONY: format test run-example
+VERSION=$(shell cat VERSION)
+
+.PHONY: get format test run-example release
+
+get:
+	go get -u -t ./...
 
 format:
 	go fmt ./...
@@ -8,3 +13,6 @@ test:
 
 run-example:
 	go run examples/main.go
+
+release:
+	git tag "$(VERSION)"

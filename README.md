@@ -13,7 +13,7 @@ go-duckpg is a Go-language library that implements the wire protocol of [Postgre
 
 ![usage.png](docs/usage.png)
 
-The library version is [v1.0.0](VERSION). On the wire, go-duckpg advertises `server_version` as `15.0` and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
+The library version is [v1.0.0-alpha.1](VERSION). On the wire, go-duckpg advertises `server_version` as `15.0` and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
 
 ## Features
 
@@ -135,6 +135,10 @@ go-duckpg does not read the user or database field of the startup message. Leave
 
 DuckDB 2.0 rejects several PostgreSQL parameters that clients send at connect time. go-duckpg stores `extra_float_digits`, `application_name`, `client_encoding`, `standard_conforming_strings`, `DateStyle`, `TimeZone`, `IntervalStyle`, and `bytea_output` on the session, and forwards every other setting, such as `search_path`, to DuckDB.
 
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md)
+
 ## License
 
-go-duckpg is released under the [MIT License](LICENSE).
+[MIT License](LICENSE)
