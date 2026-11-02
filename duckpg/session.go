@@ -45,6 +45,7 @@ type portal struct {
 
 // session holds per-client DuckDB connection state.
 type session struct {
+	user            string // startup user; empty when the client omits it
 	conn            *sql.Conn
 	txStatus        byte // 'I' idle, 'T' in transaction, 'E' failed transaction
 	processID       uint32

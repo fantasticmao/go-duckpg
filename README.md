@@ -20,7 +20,7 @@ The library version is [v1.0.0-alpha.1](VERSION). On the wire, go-duckpg adverti
 - **Simple Query**: executes one SQL string and returns rows or a command completion tag.
 - **Extended Query**: accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
 - **Pooled session**: holds one DuckDB connection from the pool for the life of each socket.
-- **Cleartext auth**: checks a cleartext password when one is set, and accepts every client when it is empty.
+- **Cleartext auth**: checks the startup user and cleartext password when `Users` is set, and accepts every client when it is nil.
 - **Optional TLS**: completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
 - **Query cancel**: interrupts the running statement when `CancelRequest` carries the matching secret.
 - **Session compat**: stores settings DuckDB 2.0 rejects, and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
@@ -59,8 +59,8 @@ func main() {
 	}
 
 	err = duckpg.Listen(db, ":15432", duckpg.Config{
-		Password: "123456",
-		TLS:      nil,
+		Users: map[string]string{"duckpg": "123456"},
+		TLS:   nil,
 	})
 	if err != nil {
 		panic(err)
@@ -68,7 +68,7 @@ func main() {
 }
 ```
 
-Point a PostgreSQL client at that address. The user and database names in the URL are ignored.
+Point a PostgreSQL client at that address. The database name in the URL is ignored. The user name is ignored when `Users` is nil, and must match a key when `Users` is set.
 
 ```bash
 psql "postgresql://duckpg:123456@127.0.0.1:15432/duckdb?sslmode=disable"
@@ -95,7 +95,7 @@ go-duckpg separates connection handling, session state, statement compatibility,
 
 go-duckpg reads startup messages before any SQL. An `SSLRequest` becomes a TLS handshake when `Config.TLS` is set, and both an unconfigured `SSLRequest` and every `GSSEncRequest` receive the byte `N`. A `CancelRequest` stays out of the query loop and cancels the query on the session whose process ID and secret match.
 
-A non-empty `Config.Password` causes go-duckpg to request `AuthenticationCleartextPassword` and compare the reply with the configured secret. go-duckpg then sends `AuthenticationOk`, the fixed parameter statuses, `BackendKeyData`, and `ReadyForQuery`.
+A nil `Config.Users` skips authentication. A non-nil `Config.Users` causes go-duckpg to request `AuthenticationCleartextPassword` and accept the connection only when the startup user is a key and the reply matches that password. go-duckpg then sends `AuthenticationOk`, the fixed parameter statuses, `BackendKeyData`, and `ReadyForQuery`.
 
 A simple `Query` and an extended Parse, Bind, Describe, Execute, and Sync sequence share one classification step. A statement that only changes a stored PostgreSQL setting completes locally. A rewritten statement, including `version()`, and every remaining statement run on that session's DuckDB connection. The reply closes with `CommandComplete` and `ReadyForQuery`. After an error in the extended protocol, go-duckpg discards messages until `Sync`, while `Terminate` still closes the session.
 
@@ -109,8 +109,8 @@ flowchart TD
     handshake --> readMsg
     replyN --> readMsg
     kind -->|CancelRequest| cancel[Cancel the matching query]
-    kind -->|StartupMessage| auth{Password set}
-    auth -->|Yes| password[Require cleartext password]
+    kind -->|StartupMessage| auth{Users set}
+    auth -->|Yes| password[Check user and cleartext password]
     auth -->|No| ready[AuthenticationOk and ReadyForQuery]
     password --> ready
     ready --> query[Simple Query or extended query]
@@ -129,7 +129,7 @@ PostgreSQL clients expect a PostgreSQL version string, which DuckDB does not ret
 
 ### Why does a connection succeed with any user name?
 
-go-duckpg does not read the user or database field of the startup message. Leave `Password` empty to accept every client, or set it so that only the cleartext secret is compared.
+go-duckpg ignores the startup user when `Users` is nil. Set `Users` so the user name must be a key and the cleartext password must match that entry.
 
 ### Why does SET extra_float_digits succeed?
 

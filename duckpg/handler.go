@@ -49,7 +49,7 @@ func (pg *pgWire) dispatch(msg pgproto3.FrontendMessage) ([]byte, error) {
 	}
 }
 
-func (pg *pgWire) handleStartupMessage(_ *pgproto3.StartupMessage) ([]byte, error) {
+func (pg *pgWire) startupResponse() ([]byte, error) {
 	buf, err := encodeAuthenticationOk(nil)
 	if err != nil {
 		return nil, err
@@ -81,7 +81,7 @@ func (pg *pgWire) handleStartupMessage(_ *pgproto3.StartupMessage) ([]byte, erro
 
 func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	query := msg.String
-	infoLog.Printf("received sql query: %s\n", query)
+	infoLog.Printf("received sql query, user: %s, query: %s\n", pg.session.user, query)
 
 	// Simple Query closes the unnamed statement and portal.
 	pg.session.clearUnnamed()

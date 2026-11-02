@@ -19,21 +19,31 @@ import (
 	"github.com/zeebo/assert"
 )
 
-func TestCleartextPassword(t *testing.T) {
-	addr, cleanup := startConfiguredServer(t, Config{Password: "secret"})
+func TestUserPassword(t *testing.T) {
+	addr, cleanup := startConfiguredServer(t, Config{
+		Users: map[string]string{"duckpg": "secret"},
+	})
 	defer cleanup()
 
 	ctx := context.Background()
-	ok := connectPgxPassword(t, addr, "secret", "disable", nil)
+	ok := connectAuth(t, addr, "duckpg", "secret", "disable", nil)
 	var n int
 	err := ok.QueryRow(ctx, `SELECT 1`).Scan(&n)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, n)
 
-	_, err = connectPgxPasswordErr(t, addr, "wrong", "disable", nil)
+	_, err = connectAuthErr(t, addr, "duckpg", "wrong", "disable", nil)
 	assert.Error(t, err)
 
-	_, err = connectPgxPasswordErr(t, addr, "", "disable", nil)
+	_, err = connectAuthErr(t, addr, "duckpg", "", "disable", nil)
+	assert.Error(t, err)
+
+	_, err = connectAuthErr(t, addr, "other", "secret", "disable", nil)
+	assert.Error(t, err)
+
+	emptyAddr, emptyCleanup := startConfiguredServer(t, Config{Users: map[string]string{}})
+	defer emptyCleanup()
+	_, err = connectAuthErr(t, emptyAddr, "duckpg", "secret", "disable", nil)
 	assert.Error(t, err)
 }
 
@@ -43,14 +53,14 @@ func TestTLSHandshake(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	conn := connectPgxPassword(t, addr, "", "require", pool)
+	conn := connectAuth(t, addr, "duckpg", "", "require", pool)
 	var n int
 	err := conn.QueryRow(ctx, `SELECT 2`).Scan(&n)
 	assert.NoError(t, err)
 	assert.Equal(t, 2, n)
 
 	// Plaintext clients still work when TLS is optional.
-	plain := connectPgxPassword(t, addr, "", "disable", nil)
+	plain := connectAuth(t, addr, "duckpg", "", "disable", nil)
 	err = plain.QueryRow(ctx, `SELECT 3`).Scan(&n)
 	assert.NoError(t, err)
 	assert.Equal(t, 3, n)
@@ -60,7 +70,7 @@ func TestSSLRequiredWithoutTLS(t *testing.T) {
 	addr, cleanup := startConfiguredServer(t, Config{})
 	defer cleanup()
 
-	_, err := connectPgxPasswordErr(t, addr, "", "require", nil)
+	_, err := connectAuthErr(t, addr, "duckpg", "", "require", nil)
 	assert.Error(t, err)
 }
 
@@ -116,24 +126,24 @@ func TestCancelWrongSecret(t *testing.T) {
 	assert.True(t, called)
 }
 
-func connectPgxPassword(t *testing.T, addr, password, sslmode string, roots *x509.CertPool) *pgx.Conn {
+func connectAuth(t *testing.T, addr, user, password, sslmode string, roots *x509.CertPool) *pgx.Conn {
 	t.Helper()
-	conn, err := connectPgxPasswordErr(t, addr, password, sslmode, roots)
+	conn, err := connectAuthErr(t, addr, user, password, sslmode, roots)
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	return conn
 }
 
-func connectPgxPasswordErr(t *testing.T, addr, password, sslmode string, roots *x509.CertPool) (*pgx.Conn, error) {
+func connectAuthErr(t *testing.T, addr, user, password, sslmode string, roots *x509.CertPool) (*pgx.Conn, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	user := "duckpg"
+	userinfo := user
 	if password != "" {
-		user = "duckpg:" + password
+		userinfo = user + ":" + password
 	}
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s/duckpg?sslmode=%s", user, addr, sslmode))
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s/duckpg?sslmode=%s", userinfo, addr, sslmode))
 	assert.NoError(t, err)
 	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	if roots != nil {

@@ -20,7 +20,7 @@ go-duckpg 是一个 Go 语言的库，它为 [DuckDB](https://duckdb.org/) 实�
 - **简单查询**： 执行一条 SQL，并返回结果行或命令完成标签。
 - **扩展查询**： 接受 Parse、Bind、Describe、Execute、Close、Sync 与 Flush。
 - **池化会话**： 在每个套接字存续期间持有一条来自连接池的 DuckDB 连接。
-- **明文认证**： 配置了密码时校验明文密码，密码为空时接受任意客户端。
+- **明文认证**： 配置了 `Users` 时校验启动用户名和明文密码，`Users` 为 nil 时接受任意客户端。
 - **可选 TLS**： `TLS` 已设置时完成 `SSLRequest`，为 nil 时回答 `N`，并拒绝 `GSSEncRequest`。
 - **查询取消**： 当 `CancelRequest` 携带匹配的密钥时，中断正在执行的语句。
 - **会话兼容**： 保存 DuckDB 2.0 会拒绝的设置，并把 `version()` 改写为 `PostgreSQL 15.0 (DuckDB 2.0.0)`。
@@ -59,8 +59,8 @@ func main() {
 	}
 
 	err = duckpg.Listen(db, ":15432", duckpg.Config{
-		Password: "123456",
-		TLS:      nil,
+		Users: map[string]string{"duckpg": "123456"},
+		TLS:   nil,
 	})
 	if err != nil {
 		panic(err)
@@ -68,7 +68,7 @@ func main() {
 }
 ```
 
-将 PostgreSQL 客户端指向该地址。URL 中的用户名和数据库名会被忽略。
+将 PostgreSQL 客户端指向该地址。URL 中的数据库名会被忽略。`Users` 为 nil 时忽略用户名，设置后用户名必须命中其中一个键。
 
 ```bash
 psql "postgresql://duckpg:123456@127.0.0.1:15432/duckdb?sslmode=disable"
@@ -95,7 +95,7 @@ go-duckpg 将连接处理、会话状态、语句兼容和值编码分开。
 
 go-duckpg 在任何 SQL 之前读取启动消息。`Config.TLS` 已设置时，`SSLRequest` 转为 TLS 握手；未配置的 `SSLRequest` 和每一条 `GSSEncRequest` 都会收到字节 `N`。`CancelRequest` 不进入查询循环，并取消进程标识与密钥均匹配的会话上的查询。
 
-`Config.Password` 非空时，go-duckpg 要求 `AuthenticationCleartextPassword`，并将回复与配置的密钥比较。随后 go-duckpg 发送 `AuthenticationOk`、固定的参数状态、`BackendKeyData` 和 `ReadyForQuery`。
+`Config.Users` 为 nil 时，go-duckpg 跳过认证。`Config.Users` 非 nil 时，go-duckpg 要求 `AuthenticationCleartextPassword`，并仅在启动用户名是其中一个键且回复与对应密码一致时接受该连接。随后 go-duckpg 发送 `AuthenticationOk`、固定的参数状态、`BackendKeyData` 和 `ReadyForQuery`。
 
 简单 `Query` 与扩展协议中的 Parse、Bind、Describe、Execute、Sync 序列共用同一步分类。仅修改已保存 PostgreSQL 设置的语句在本地完成。经过改写的语句（包括 `version()`）以及其余语句，都在该会话的 DuckDB 连接上执行。应答以 `CommandComplete` 和 `ReadyForQuery` 结束。扩展协议出错后，go-duckpg 丢弃消息直到 `Sync`，而 `Terminate` 仍会关闭会话。
 
@@ -109,8 +109,8 @@ flowchart TD
     handshake --> readMsg
     replyN --> readMsg
     kind -->|CancelRequest| cancel[取消匹配的查询]
-    kind -->|StartupMessage| auth{是否设置密码}
-    auth -->|是| password[要求明文密码]
+    kind -->|StartupMessage| auth{是否设置 Users}
+    auth -->|是| password[校验用户名与明文密码]
     auth -->|否| ready[AuthenticationOk 与 ReadyForQuery]
     password --> ready
     ready --> query[简单查询或扩展查询]
@@ -129,7 +129,7 @@ PostgreSQL 客户端期望得到 PostgreSQL 版本字符串，而 DuckDB 不返�
 
 ### 为什么任意用户名都能连接成功？
 
-go-duckpg 不读取启动消息中的用户或数据库字段。将 `Password` 留空即可接受任意客户端，或设置该值，使比较只针对明文密钥。
+`Users` 为 nil 时，go-duckpg 忽略启动消息中的用户名。设置 `Users` 后，用户名必须是其中一个键，且明文密码必须与对应值一致。
 
 ### 为什么 SET extra_float_digits 会成功？
 

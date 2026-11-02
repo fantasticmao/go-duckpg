@@ -17,23 +17,27 @@ var infoLog = log.New(os.Stdout, "[go-duckpg] ", log.Ldate|log.Ltime)
 var errorLog = log.New(os.Stderr, "[go-duckpg] ", log.Lshortfile)
 
 // Config controls optional startup behavior.
-// An empty Password accepts every client. A non-empty Password requires
-// AuthenticationCleartextPassword. A nil TLS refuses SSLRequest with 'N';
-// a non-nil TLS completes the handshake after SSLRequest.
+// A nil Users accepts every client. A non-nil Users requires the startup
+// user to be a key and the cleartext password to match that entry.
+// A nil TLS refuses SSLRequest with 'N'; a non-nil TLS completes the
+// handshake after SSLRequest.
 type Config struct {
-	Password string
-	TLS      *tls.Config
-}
-
-// Startup listens on address with no password and no TLS.
-// Use Listen to require a cleartext password or accept SSL connections.
-func Startup(duckdb *sql.DB, address string) error {
-	return Listen(duckdb, address, Config{})
+	Users map[string]string
+	TLS   *tls.Config
 }
 
 // Listen initializes the PostgreSQL wire server and listens for incoming connections.
 // Each client gets a dedicated DuckDB connection from the pool for the lifetime of the socket.
+// A non-nil Users map is copied before listening, so later changes to the caller's map have no effect.
 func Listen(duckdb *sql.DB, address string, cfg Config) error {
+	if cfg.Users != nil {
+		users := make(map[string]string, len(cfg.Users))
+		for user, password := range cfg.Users {
+			users[user] = password
+		}
+		cfg.Users = users
+	}
+
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
@@ -58,10 +62,15 @@ func serve(conn net.Conn, db *sql.DB, cfg Config) {
 	}
 	defer func() { _ = pg.conn.Close() }()
 
-	if err := pg.run(); err != nil {
-		errorLog.Printf("pgwire server run error: %s\n", err.Error())
+	err := pg.run()
+	user := ""
+	if pg.session != nil {
+		user = pg.session.user
 	}
-	infoLog.Printf("connection closed, remote addr: %s\n", conn.RemoteAddr())
+	if err != nil {
+		errorLog.Printf("pgwire server run error, user: %s, error: %s\n", user, err.Error())
+	}
+	infoLog.Printf("connection closed, user: %s, remote addr: %s\n", user, conn.RemoteAddr())
 }
 
 type pgWire struct {
@@ -73,7 +82,7 @@ type pgWire struct {
 }
 
 func (pg *pgWire) run() error {
-	stop, err := pg.handleStartup()
+	stop, err := pg.startup()
 	if pg.session != nil {
 		defer func() {
 			unregisterSession(pg.session)
@@ -105,9 +114,9 @@ func (pg *pgWire) run() error {
 	}
 }
 
-// handleStartup reads SSL, GSS, and Cancel packets, then authenticates.
+// startup reads SSL, GSS, and Cancel packets, then authenticates.
 // stop is true when the connection is a CancelRequest and should not enter the query loop.
-func (pg *pgWire) handleStartup() (stop bool, err error) {
+func (pg *pgWire) startup() (stop bool, err error) {
 	for {
 		msg, err := pg.backend.ReceiveStartupMessage()
 		if err != nil {
@@ -121,7 +130,7 @@ func (pg *pgWire) handleStartup() (stop bool, err error) {
 			}
 			continue
 		case *pgproto3.StartupMessage:
-			if err := pg.beginSession(m); err != nil {
+			if err := pg.openSession(m); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -159,7 +168,7 @@ func (pg *pgWire) handleSSLRequest() error {
 	return nil
 }
 
-func (pg *pgWire) beginSession(msg *pgproto3.StartupMessage) error {
+func (pg *pgWire) openSession(msg *pgproto3.StartupMessage) error {
 	sess, err := newSession(pg.db)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -167,23 +176,31 @@ func (pg *pgWire) beginSession(msg *pgproto3.StartupMessage) error {
 	pg.session = sess
 	registerSession(sess)
 
-	if pg.cfg.Password != "" {
-		if err := pg.requireCleartextPassword(); err != nil {
-			return err
-		}
+	user := ""
+	if msg.Parameters != nil {
+		user = msg.Parameters["user"]
+	}
+	pg.session.user = user
+	if err := pg.authenticate(user); err != nil {
+		return err
 	}
 
-	buf, err := pg.handleStartupMessage(msg)
+	buf, err := pg.startupResponse()
 	if err != nil {
-		return fmt.Errorf("handle startup message failed: %w", err)
+		return fmt.Errorf("startup response failed: %w", err)
 	}
 	if _, err = pg.conn.Write(buf); err != nil {
 		return fmt.Errorf("write response buffer error: %w", err)
 	}
+	infoLog.Printf("authentication succeeded, user: %s, remote addr: %s\n", user, pg.conn.RemoteAddr())
 	return nil
 }
 
-func (pg *pgWire) requireCleartextPassword() error {
+func (pg *pgWire) authenticate(user string) error {
+	if pg.cfg.Users == nil {
+		return nil
+	}
+
 	buf, err := encodeAuthenticationCleartextPassword(nil)
 	if err != nil {
 		return err
@@ -197,7 +214,8 @@ func (pg *pgWire) requireCleartextPassword() error {
 		return fmt.Errorf("receive password message error: %w", err)
 	}
 	passwordMsg, ok := msg.(*pgproto3.PasswordMessage)
-	if !ok || !passwordMatch(passwordMsg.Password, pg.cfg.Password) {
+	want, found := pg.cfg.Users[user]
+	if !ok || !found || !passwordMatch(passwordMsg.Password, want) {
 		return pg.authFailed()
 	}
 	return nil
