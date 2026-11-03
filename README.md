@@ -9,7 +9,7 @@ README [English](README.md) | [中文](README_ZH.md)
 
 ## What is this
 
-go-duckpg is a Go library that provides the wire protocol of [PostgreSQL](https://www.postgresql.org/) for a caller-supplied [DuckDB](https://duckdb.org/) database, and it does not implement the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password. The current library version is [v1.0.0-alpha.1](VERSION).
+go-duckpg is a Go library that provides the wire protocol of [PostgreSQL](https://www.postgresql.org/) for a caller-supplied [DuckDB](https://duckdb.org/) database, and it does not implement the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password. The current library version is [v1.0.0-beta.1](VERSION).
 
 ![usage.png](docs/usage.png)
 

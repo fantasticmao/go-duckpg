@@ -9,7 +9,7 @@ README [English](README.md) | [中文](README_ZH.md)
 
 ## 这是什么
 
-go-duckpg 是一个 Go 语言的库，它为调用方提供的 [DuckDB](https://duckdb.org/) 数据库实现 [PostgreSQL](https://www.postgresql.org/) 的线协议，并且不实现 PostgreSQL 的 SQL 方言、系统目录，以及明文密码以外的认证方式。当前库版本为 [v1.0.0-alpha.1](VERSION)。
+go-duckpg 是一个 Go 语言的库，它为调用方提供的 [DuckDB](https://duckdb.org/) 数据库实现 [PostgreSQL](https://www.postgresql.org/) 的线协议，并且不实现 PostgreSQL 的 SQL 方言、系统目录，以及明文密码以外的认证方式。当前库版本为 [v1.0.0-beta.1](VERSION)。
 
 ![usage.png](docs/usage.png)
 
