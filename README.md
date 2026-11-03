@@ -9,22 +9,20 @@ README [English](README.md) | [中文](README_ZH.md)
 
 ## What is this
 
-go-duckpg is a Go-language library that implements the wire protocol of [PostgreSQL](https://www.postgresql.org/) for [DuckDB](https://duckdb.org/). PostgreSQL clients query a caller-supplied DuckDB database through that endpoint, and the library does not implement the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password.
+go-duckpg is a Go library that provides the wire protocol of [PostgreSQL](https://www.postgresql.org/) for a caller-supplied [DuckDB](https://duckdb.org/) database, and it does not implement the PostgreSQL SQL dialect, system catalogs, or any authentication method other than a cleartext password. The current library version is [v1.0.0-alpha.1](VERSION).
 
 ![usage.png](docs/usage.png)
-
-The library version is [v1.0.0-alpha.1](VERSION). On the wire, go-duckpg advertises `server_version` as `15.0` and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
 
 ## Features
 
 - **Simple Query**: executes one SQL string and returns rows or a command completion tag.
 - **Extended Query**: accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
 - **Pooled session**: holds one DuckDB connection from the pool for the life of each socket.
-- **Cleartext auth**: checks the startup user and cleartext password when `Users` is set, and accepts every client when it is nil.
+- **Cleartext auth**: checks the startup user and password when `Users` is set, and accepts every client when it is nil.
 - **Optional TLS**: completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
 - **Query cancel**: interrupts the running statement when `CancelRequest` carries the matching secret.
-- **Session compat**: stores settings DuckDB 2.0 rejects, and rewrites `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
-- **Type mapping**: advertises each DuckDB column as the nearest PostgreSQL type, in text or supported binary.
+- **Session compat**: stores settings DuckDB rejects, and rewrites `version()` before the client reads it.
+- **Type mapping**: advertises each DuckDB column as the nearest PostgreSQL type, in text or binary.
 
 ## Download and Install
 
@@ -51,31 +49,34 @@ import (
 
 func main() {
 	db, err := sql.Open("duckdb", "test.db")
-	if err != nil {
-		panic(err)
-	}
-	if err = db.Ping(); err != nil {
-		panic(err)
-	}
+	checkError(err)
+
+	err = db.Ping()
+	checkError(err)
 
 	err = duckpg.Listen(db, ":15432", duckpg.Config{
-		Users: map[string]string{"duckpg": "123456"},
-		TLS:   nil,
+		Users:         map[string]string{"duckpg": "123456"},
+		TLS:           nil,
+		ServerVersion: "15.0",
 	})
+	checkError(err)
+}
+
+func checkError(err error) {
 	if err != nil {
 		panic(err)
 	}
 }
 ```
 
-Point a PostgreSQL client at that address. The database name in the URL is ignored. The user name is ignored when `Users` is nil, and must match a key when `Users` is set.
+Point a PostgreSQL client at that address. The database name in the URL has no effect. A nil `Users` map also ignores the user name.
 
 ```bash
 psql "postgresql://duckpg:123456@127.0.0.1:15432/duckdb?sslmode=disable"
 ```
 
 > [!IMPORTANT]
-> `Listen` keeps accepting connections until the process exits, and returns when the listener can no longer accept one.
+> `Listen` returns when it can no longer accept a connection, and it keeps accepting until that failure.
 
 > [!NOTE]
 > The password in the example travels as clear text. Set `Config.TLS` before that port is reachable outside a trusted network, and keep `sslmode=disable` only while `TLS` is nil.
@@ -87,58 +88,58 @@ go-duckpg separates connection handling, session state, statement compatibility,
 ### Architecture
 
 - **Wire server**: accepts TCP sockets, finishes startup, and dispatches each frontend message.
-- **Client session**: keeps the DuckDB connection, prepared statements, bound portals, transaction status, and cancel key.
+- **Client session**: keeps the DuckDB connection, prepared statements, bound portals, transaction status, and the cancel key.
 - **Compatibility**: passes a statement through, answers it from session state, or rewrites it before execution.
 - **Type codec**: maps each DuckDB column to a PostgreSQL OID and encodes the value as text or binary.
 
 ### Core flow
 
-go-duckpg reads startup messages before any SQL. An `SSLRequest` becomes a TLS handshake when `Config.TLS` is set, and both an unconfigured `SSLRequest` and every `GSSEncRequest` receive the byte `N`. A `CancelRequest` stays out of the query loop and cancels the query on the session whose process ID and secret match.
+go-duckpg reads startup messages before any SQL. An `SSLRequest` becomes a TLS handshake when `Config.TLS` is set, and both an unconfigured `SSLRequest` and every `GSSEncRequest` receive the byte `N`. A `CancelRequest` stays outside the query loop and cancels the query on the session whose process ID and secret match.
 
-A nil `Config.Users` skips authentication. A non-nil `Config.Users` causes go-duckpg to request `AuthenticationCleartextPassword` and accept the connection only when the startup user is a key and the reply matches that password. go-duckpg then sends `AuthenticationOk`, the fixed parameter statuses, `BackendKeyData`, and `ReadyForQuery`.
+A nil `Config.Users` skips authentication. A non-nil `Config.Users` requests a cleartext password and accepts the connection only when the startup user is a key and the reply matches that entry. go-duckpg then sends `AuthenticationOk`, the parameter statuses, `BackendKeyData`, and `ReadyForQuery`.
 
-A simple `Query` and an extended Parse, Bind, Describe, Execute, and Sync sequence share one classification step. A statement that only changes a stored PostgreSQL setting completes locally. A rewritten statement, including `version()`, and every remaining statement run on that session's DuckDB connection. The reply closes with `CommandComplete` and `ReadyForQuery`. After an error in the extended protocol, go-duckpg discards messages until `Sync`, while `Terminate` still closes the session.
+A simple `Query` and an extended Parse, Bind, Describe, Execute, and Sync sequence share one classification step. A statement that only changes a stored PostgreSQL setting completes locally. A rewritten statement and every remaining statement run on that session's DuckDB connection. The reply closes with `CommandComplete` and `ReadyForQuery`. After an error in the extended protocol, go-duckpg discards messages until `Sync`, while `Terminate` still closes the session.
 
 ```mermaid
 flowchart TD
-    accept[Accept TCP] --> readMsg[Read startup message]
-    readMsg --> kind{Message kind}
-    kind -->|SSLRequest with TLS| handshake[Complete TLS handshake]
-    kind -->|SSLRequest without TLS| replyN[Reply N]
-    kind -->|GSSEncRequest| replyN
-    handshake --> readMsg
-    replyN --> readMsg
+    accept[Accept a TCP socket] --> startup[Read a startup message]
+    startup --> kind{Which message}
+    kind -->|SSLRequest and TLS is set| tls[Finish the TLS handshake]
+    kind -->|SSLRequest and TLS is nil| decline[Send N]
+    kind -->|GSSEncRequest| decline
+    tls --> startup
+    decline --> startup
     kind -->|CancelRequest| cancel[Cancel the matching query]
-    kind -->|StartupMessage| auth{Users set}
-    auth -->|Yes| password[Check user and cleartext password]
-    auth -->|No| ready[AuthenticationOk and ReadyForQuery]
+    kind -->|StartupMessage| users{Users is set}
+    users -->|Yes| password[Match the user and cleartext password]
+    users -->|No| ready[Send AuthenticationOk and ReadyForQuery]
     password --> ready
-    ready --> query[Simple Query or extended query]
-    query --> classify{Compatibility class}
-    classify -->|Local setting| done[CommandComplete and ReadyForQuery]
-    classify -->|Rewrite or pass through| exec[Run SQL on the session connection]
-    exec --> done
-    done --> query
+    ready --> query[Receive a simple or extended query]
+    query --> class{How the statement is classed}
+    class -->|Stored setting| complete[Send CommandComplete and ReadyForQuery]
+    class -->|Rewrite or pass through| duckdb[Execute on the session connection]
+    duckdb --> complete
+    complete --> query
 ```
 
 ## FAQ
 
-### Why does version() report PostgreSQL 15.0?
+### Why does a PostgreSQL catalog or dialect query fail?
 
-PostgreSQL clients expect a PostgreSQL version string, which DuckDB does not return. go-duckpg rewrites `SELECT version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`, while the library version remains the contents of [VERSION](VERSION).
+DuckDB receives the statement, and go-duckpg does not implement `pg_catalog` or the PostgreSQL SQL dialect.
 
-### Why does a connection succeed with any user name?
+### Why is the database name in the URL ignored?
 
-go-duckpg ignores the startup user when `Users` is nil. Set `Users` so the user name must be a key and the cleartext password must match that entry.
+The startup message supplies the user name, and go-duckpg does not read the database name. Any database name is valid, and `Users` decides which clients may connect.
 
-### Why does SET extra_float_digits succeed?
+### Why do SCRAM and MD5 fail?
 
-DuckDB 2.0 rejects several PostgreSQL parameters that clients send at connect time. go-duckpg stores `extra_float_digits`, `application_name`, `client_encoding`, `standard_conforming_strings`, `DateStyle`, `TimeZone`, `IntervalStyle`, and `bytea_output` on the session, and forwards every other setting, such as `search_path`, to DuckDB.
+go-duckpg requests a cleartext password when `Users` is set, and it skips authentication when `Users` is nil. The client accepts a cleartext password, and `Config.TLS` is set before the port is reachable outside a trusted network.
 
 ## Changelog
 
-[CHANGELOG.md](CHANGELOG.md)
+Notable changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-[MIT License](LICENSE)
+go-duckpg is released under the [MIT License](LICENSE).

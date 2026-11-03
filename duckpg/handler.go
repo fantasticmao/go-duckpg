@@ -56,7 +56,7 @@ func (pg *pgWire) startupResponse() ([]byte, error) {
 	}
 
 	params := [][2]string{
-		{"server_version", "15.0"},
+		{"server_version", pg.cfg.serverVersion()},
 		{"server_encoding", "UTF8"},
 		{"client_encoding", "UTF8"},
 		{"DateStyle", "ISO, MDY"},

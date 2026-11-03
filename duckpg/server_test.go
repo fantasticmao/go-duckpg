@@ -105,7 +105,7 @@ func TestCompatStartup(t *testing.T) {
 	var version string
 	err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
 	assert.NoError(t, err)
-	assert.Equal(t, "PostgreSQL 15.0 (DuckDB 2.0.0)", version)
+	assert.Equal(t, "PostgreSQL 15.0 (DuckDB "+duckdbVersion()+")", version)
 
 	var serverVersion string
 	err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
@@ -116,6 +116,26 @@ func TestCompatStartup(t *testing.T) {
 	err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
 	assert.NoError(t, err)
 	assert.Equal(t, "read committed", isolation)
+}
+
+func TestConfiguredServerVersion(t *testing.T) {
+	addr, cleanup := startConfiguredServer(t, Config{ServerVersion: "16.4"})
+	defer cleanup()
+
+	conn := connectPgx(t, addr, true)
+	ctx := context.Background()
+
+	assert.Equal(t, "16.4", conn.PgConn().ParameterStatus("server_version"))
+
+	var version string
+	err := conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
+	assert.NoError(t, err)
+	assert.Equal(t, "PostgreSQL 16.4 (DuckDB "+duckdbVersion()+")", version)
+
+	var serverVersion string
+	err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
+	assert.NoError(t, err)
+	assert.Equal(t, "16.4", serverVersion)
 }
 
 func TestExtendedProtocol(t *testing.T) {

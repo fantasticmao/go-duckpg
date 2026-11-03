@@ -7,19 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Config.ServerVersion` selects the PostgreSQL version advertised as `server_version`. An empty value uses `15.0`.
+- `version()` appends the version of the linked DuckDB library.
+
 ## [1.0.0-alpha.1] - 2026-11-02
 
 ### Added
 
-- PostgreSQL wire service for a caller-supplied DuckDB database, through `Startup` and `Listen`.
-- Simple Query, which executes one SQL string and returns rows or a command completion tag.
-- Extended query, which accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
-- One DuckDB session per connection, kept across SQL errors and transactions.
-- PostgreSQL type advertisement for each DuckDB column, in text or supported binary.
-- Cleartext password authentication when a password is set, and acceptance of every client when it is empty.
-- TLS handshake for `SSLRequest` when `TLS` is set, the byte `N` when it is nil, and refusal of `GSSEncRequest`.
-- Query cancellation when `CancelRequest` carries the matching process ID and secret.
-- Session storage for PostgreSQL settings that DuckDB 2.0 rejects, and a rewrite of `version()` to `PostgreSQL 15.0 (DuckDB 2.0.0)`.
+- `Listen` serves the PostgreSQL wire protocol for a caller-supplied DuckDB database.
+- Simple Query executes one SQL string and returns rows or a command completion tag.
+- Extended query accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
+- Each socket keeps one DuckDB session across later statements, errors, and transactions.
+- Each DuckDB column is advertised as the nearest PostgreSQL type, in text or binary.
+- A nil `Users` map accepts every client. A non-nil map requires the startup user to be a key and the cleartext password to match that entry.
+- `TLS` completes `SSLRequest` when it is set. A nil `TLS` answers `N`, and every `GSSEncRequest` is declined.
+- `CancelRequest` interrupts the query whose process ID and secret match.
+- The session stores PostgreSQL settings that DuckDB rejects, and `version()` is rewritten for PostgreSQL clients.
 
 [Unreleased]: https://github.com/fantasticmao/go-duckpg/compare/v1.0.0-alpha.1...HEAD
 [1.0.0-alpha.1]: https://github.com/fantasticmao/go-duckpg/releases/tag/v1.0.0-alpha.1

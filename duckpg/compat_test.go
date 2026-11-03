@@ -60,7 +60,7 @@ func TestClassifyCompat(t *testing.T) {
 		}{
 			{
 				sql:  `SELECT pg_catalog.version()`,
-				want: `SELECT 'PostgreSQL 15.0 (DuckDB 2.0.0)' AS version`,
+				want: `SELECT ` + sqlStringLiteral("PostgreSQL 15.0 (DuckDB "+duckdbVersion()+")") + ` AS version`,
 			},
 			{
 				sql:  `SELECT current_setting('server_version')`,
@@ -89,6 +89,14 @@ func TestClassifyCompat(t *testing.T) {
 
 		setConfig := classifyCompat(`SELECT set_config('extra_float_digits', '3', false)`, s)
 		assert.Equal(t, "3", setConfig.effect.sets["extra_float_digits"])
+
+		custom := &session{settings: map[string]string{"server_version": "16.4"}}
+		class := classifyCompat(`SELECT version()`, custom)
+		assert.Equal(t, compatRewrite, class.kind)
+		assert.Equal(t, `SELECT `+sqlStringLiteral("PostgreSQL 16.4 (DuckDB "+duckdbVersion()+")")+` AS version`, class.sql)
+		setting := classifyCompat(`SELECT current_setting('server_version')`, custom)
+		assert.Equal(t, compatRewrite, setting.kind)
+		assert.Equal(t, `SELECT '16.4' AS current_setting`, setting.sql)
 	})
 }
 

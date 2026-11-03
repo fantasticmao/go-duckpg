@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"os"
+	"strings"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -16,14 +18,29 @@ import (
 var infoLog = log.New(os.Stdout, "[go-duckpg] ", log.Ldate|log.Ltime)
 var errorLog = log.New(os.Stderr, "[go-duckpg] ", log.Lshortfile)
 
+// defaultServerVersion is the PostgreSQL server_version used when Config.ServerVersion is empty.
+const defaultServerVersion = "15.0"
+
 // Config controls optional startup behavior.
 // A nil Users accepts every client. A non-nil Users requires the startup
 // user to be a key and the cleartext password to match that entry.
 // A nil TLS refuses SSLRequest with 'N'; a non-nil TLS completes the
 // handshake after SSLRequest.
+// An empty ServerVersion advertises PostgreSQL 15.0. version() appends the
+// linked DuckDB library version.
 type Config struct {
-	Users map[string]string
-	TLS   *tls.Config
+	Users         map[string]string
+	TLS           *tls.Config
+	ServerVersion string
+}
+
+// serverVersion is the PostgreSQL server_version for this configuration.
+// Whitespace-only values use the default.
+func (cfg Config) serverVersion() string {
+	if v := strings.TrimSpace(cfg.ServerVersion); v != "" {
+		return v
+	}
+	return defaultServerVersion
 }
 
 // Listen initializes the PostgreSQL wire server and listens for incoming connections.
@@ -32,9 +49,7 @@ type Config struct {
 func Listen(duckdb *sql.DB, address string, cfg Config) error {
 	if cfg.Users != nil {
 		users := make(map[string]string, len(cfg.Users))
-		for user, password := range cfg.Users {
-			users[user] = password
-		}
+		maps.Copy(users, cfg.Users)
 		cfg.Users = users
 	}
 
@@ -174,6 +189,7 @@ func (pg *pgWire) openSession(msg *pgproto3.StartupMessage) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 	pg.session = sess
+	pg.session.settings["server_version"] = pg.cfg.serverVersion()
 	registerSession(sess)
 
 	user := ""

@@ -3,9 +3,10 @@ package duckpg
 import (
 	"regexp"
 	"strings"
-)
+	"sync"
 
-const pgVersionText = "PostgreSQL 15.0 (DuckDB 2.0.0)"
+	"github.com/duckdb/duckdb-go/v2/mapping"
+)
 
 // compatKind is how a whole client statement is handled before DuckDB sees it.
 type compatKind int
@@ -32,7 +33,7 @@ type compatClass struct {
 // startupSettings are the values advertised at connection startup, plus defaults
 // for PostgreSQL GUCs that DuckDB 2.0 does not implement.
 var startupSettings = map[string]string{
-	"server_version":              "15.0",
+	"server_version":              defaultServerVersion,
 	"server_encoding":             "UTF8",
 	"client_encoding":             "UTF8",
 	"datestyle":                   "ISO, MDY",
@@ -85,7 +86,7 @@ func classifyCompat(query string, s *session) compatClass {
 	if reVersion.MatchString(sql) {
 		return compatClass{
 			kind: compatRewrite,
-			sql:  "SELECT " + sqlStringLiteral(pgVersionText) + " AS version",
+			sql:  "SELECT " + sqlStringLiteral(versionText(s)) + " AS version",
 		}
 	}
 	if class, ok := classifyCurrentSetting(sql, s); ok {
@@ -201,6 +202,32 @@ func classifySetConfig(sql string) (compatClass, bool) {
 		sql:    "SELECT " + sqlStringLiteral(value) + " AS set_config",
 		effect: compatEffect{sets: map[string]string{name: value}},
 	}, true
+}
+
+var (
+	duckdbVersionOnce sync.Once
+	duckdbVersionText string
+)
+
+// duckdbVersion is the linked libduckdb version from mapping.LibraryVersion.
+// An empty library string becomes "unknown".
+func duckdbVersion() string {
+	duckdbVersionOnce.Do(func() {
+		duckdbVersionText = mapping.LibraryVersion()
+		if duckdbVersionText == "" {
+			duckdbVersionText = "unknown"
+		}
+	})
+	return duckdbVersionText
+}
+
+// versionText is the sentence returned by version().
+func versionText(s *session) string {
+	pg, ok := lookupSetting(s, "server_version")
+	if !ok || pg == "" {
+		pg = defaultServerVersion
+	}
+	return "PostgreSQL " + pg + " (DuckDB " + duckdbVersion() + ")"
 }
 
 func lookupSetting(s *session, name string) (string, bool) {
