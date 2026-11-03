@@ -13,6 +13,17 @@ go-duckpg is a Go library that provides the wire protocol of [PostgreSQL](https:
 
 ![usage.png](docs/usage.png)
 
+### Features
+
+- **Simple Query**: executes one SQL string and returns rows or a command completion tag.
+- **Extended Query**: accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
+- **Pooled session**: holds one DuckDB connection from the pool for the life of each socket.
+- **Cleartext auth**: checks the startup user and password when `Users` is set, and accepts every client when it is nil.
+- **Optional TLS**: completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
+- **Query cancel**: interrupts the running statement when `CancelRequest` carries the matching secret.
+- **Session compat**: stores settings DuckDB rejects, and rewrites `version()` before the client reads it.
+- **Type mapping**: advertises each DuckDB column as the nearest PostgreSQL type, in text or binary.
+
 ## PostgreSQL wire vs Quack
 
 A DuckDB database reaches another process through the PostgreSQL wire protocol that go-duckpg implements, or through [Quack](https://duckdb.org/docs/2.0/quack/overview). The table below lists the differences in detail.
@@ -27,16 +38,13 @@ A DuckDB database reaches another process through the PostgreSQL wire protocol t
 | **Authentication** | A non-nil `Users` checks a cleartext password, and a non-nil `Config.TLS` completes TLS.               | A token is required, the default bind is localhost, and a non-local URI uses HTTPS.                             |
 | **Hosting**        | The caller opens DuckDB and passes `*sql.DB` to `Listen`, and each socket holds one pooled connection. | The `quack` extension serves inside the DuckDB process that owns the data.                                      |
 
-## Features
+### Localhost benchmark
 
-- **Simple Query**: executes one SQL string and returns rows or a command completion tag.
-- **Extended Query**: accepts Parse, Bind, Describe, Execute, Close, Sync, and Flush.
-- **Pooled session**: holds one DuckDB connection from the pool for the life of each socket.
-- **Cleartext auth**: checks the startup user and password when `Users` is set, and accepts every client when it is nil.
-- **Optional TLS**: completes `SSLRequest` when `TLS` is set, answers `N` when it is nil, and declines `GSSEncRequest`.
-- **Query cancel**: interrupts the running statement when `CancelRequest` carries the matching secret.
-- **Session compat**: stores settings DuckDB rejects, and rewrites `version()` before the client reads it.
-- **Type mapping**: advertises each DuckDB column as the nearest PostgreSQL type, in text or binary.
+The [benchmark](benchmarks/README.md) compares in-process duckdb-go, go-duckpg, and Quack on one machine. The figures below come from Go 1.27.1, DuckDB v2.0.0, and 8 CPUs, with a table of 100,000 rows. Each ratio is a median elapsed time divided by the in-process time.
+
+- **Small results**: go-duckpg is 1.1–1.7× in-process duckdb-go, and Quack is 2.0–3.7×, for `SELECT 1`, a full-table aggregate, a point read, and a single-row insert.
+- **Bulk scans**: a 100,000-row scan is 1.2× in-process for Quack and 2.9× for go-duckpg.
+- **New sessions**: a go-duckpg session opens in about 0.12 ms, and a Quack `ATTACH` plus `CONNECT` takes about 2.9 ms.
 
 ## Download and Install
 

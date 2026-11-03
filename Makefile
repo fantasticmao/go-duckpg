@@ -12,7 +12,10 @@ test:
 	go test ./... -race -coverprofile=coverage.txt -covermode=atomic -v
 
 run-example:
-	go run examples/main.go
+	go run ./examples
+
+run-benchmark:
+	go run ./benchmarks
 
 release:
 	git tag "$(VERSION)"
