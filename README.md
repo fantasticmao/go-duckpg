@@ -115,9 +115,9 @@ flowchart TD
     users -->|No| ready[Send AuthenticationOk and ReadyForQuery]
     password --> ready
     ready --> query[Receive a simple or extended query]
-    query --> class{How the statement is classed}
-    class -->|Stored setting| complete[Send CommandComplete and ReadyForQuery]
-    class -->|Rewrite or pass through| duckdb[Execute on the session connection]
+    query --> classify{How the statement is classed}
+    classify -->|Stored setting| complete[Send CommandComplete and ReadyForQuery]
+    classify -->|Rewrite or pass through| duckdb[Execute on the session connection]
     duckdb --> complete
     complete --> query
 ```

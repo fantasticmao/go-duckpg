@@ -115,9 +115,9 @@ flowchart TD
     users -->|否| ready[发送 AuthenticationOk 与 ReadyForQuery]
     password --> ready
     ready --> query[接收简单查询或扩展查询]
-    query --> class{语句如何分类}
-    class -->|已保存的设置| complete[发送 CommandComplete 与 ReadyForQuery]
-    class -->|改写或放行| duckdb[在会话连接上执行]
+    query --> classify{语句如何分类}
+    classify -->|已保存的设置| complete[发送 CommandComplete 与 ReadyForQuery]
+    classify -->|改写或放行| duckdb[在会话连接上执行]
     duckdb --> complete
     complete --> query
 ```
