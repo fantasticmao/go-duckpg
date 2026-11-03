@@ -9,7 +9,7 @@ format:
 	go fmt ./...
 
 test:
-	go test ./... -race -coverprofile=coverage.txt -covermode=atomic -v
+	go test ./duckpg/... -race -coverpkg=./duckpg/... -coverprofile=coverage.txt -covermode=atomic -v
 
 run-example:
 	go run ./examples
