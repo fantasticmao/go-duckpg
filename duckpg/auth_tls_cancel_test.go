@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/zeebo/assert"
 )
 
@@ -94,6 +96,11 @@ func TestCancelRequest(t *testing.T) {
 	select {
 	case err = <-errCh:
 		assert.Error(t, err)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			t.Fatalf("expected PgError, got %v", err)
+		}
+		assert.Equal(t, "57014", pgErr.Code)
 		msg := strings.ToLower(err.Error())
 		if !strings.Contains(msg, "interrupt") && !strings.Contains(msg, "cancel") {
 			t.Fatalf("expected query cancellation, got %v", err)

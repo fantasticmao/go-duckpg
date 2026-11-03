@@ -78,7 +78,6 @@ func main() {
 
 	err = duckpg.Listen(db, ":15432", duckpg.Config{
 		Users:         map[string]string{"duckpg": "123456"},
-		TLS:           nil,
 		ServerVersion: "15.0",
 	})
 	checkError(err)

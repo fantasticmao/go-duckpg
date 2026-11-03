@@ -3,6 +3,7 @@ package duckpg
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/zeebo/assert"
 )
 
@@ -203,6 +205,19 @@ func TestExtendedQueryExecModes(t *testing.T) {
 			assert.Equal(t, int32(42), got)
 		})
 	}
+}
+
+func TestSyntaxSQLState(t *testing.T) {
+	addr, cleanup := startTestServer(t)
+	defer cleanup()
+
+	conn := connectPgx(t, addr, true)
+	_, err := conn.Exec(context.Background(), `SELEC 1`)
+	assert.Error(t, err)
+
+	var pgErr *pgconn.PgError
+	assert.True(t, errors.As(err, &pgErr))
+	assert.Equal(t, "42601", pgErr.Code)
 }
 
 func TestExtendedNamedPrepare(t *testing.T) {

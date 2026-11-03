@@ -81,7 +81,7 @@ func (pg *pgWire) startupResponse() ([]byte, error) {
 
 func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	query := msg.String
-	infoLog.Printf("received sql query, user: %s, query: %s\n", pg.session.user, query)
+	logSQL(pg, query)
 
 	// Simple Query closes the unnamed statement and portal.
 	pg.session.clearUnnamed()
@@ -96,6 +96,16 @@ func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	}
 
 	return pg.executeSimpleQuery(query)
+}
+
+func (pg *pgWire) queryFailed(query string, err error) ([]byte, error) {
+	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+	logSQLFailed(pg, query, err)
+	buf, encErr := encodeErrorResponse(nil, err)
+	if encErr != nil {
+		return nil, encErr
+	}
+	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
 func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
@@ -137,12 +147,7 @@ func prefersExec(query string) bool {
 func (pg *pgWire) executeExec(ctx context.Context, query string) ([]byte, error) {
 	result, err := pg.session.conn.ExecContext(ctx, query)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
-		buf, encErr := encodeErrorResponse(nil, err)
-		if encErr != nil {
-			return nil, encErr
-		}
-		return encodeReadyForQuery(buf, pg.session.txStatus)
+		return pg.queryFailed(query, err)
 	}
 
 	rowsAffected := int64(0)
@@ -163,33 +168,18 @@ func (pg *pgWire) executeExec(ctx context.Context, query string) ([]byte, error)
 func (pg *pgWire) executeQuery(ctx context.Context, query string) ([]byte, error) {
 	rows, err := pg.session.conn.QueryContext(ctx, query)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
-		buf, encErr := encodeErrorResponse(nil, err)
-		if encErr != nil {
-			return nil, encErr
-		}
-		return encodeReadyForQuery(buf, pg.session.txStatus)
+		return pg.queryFailed(query, err)
 	}
 	defer rows.Close()
 
 	buf, oids, err := encodeRowDescription(nil, rows)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
-		ebuf, encErr := encodeErrorResponse(nil, err)
-		if encErr != nil {
-			return nil, encErr
-		}
-		return encodeReadyForQuery(ebuf, pg.session.txStatus)
+		return pg.queryFailed(query, err)
 	}
 
 	buf, rowCnt, err := encodeDataRow(buf, rows, oids)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
-		ebuf, encErr := encodeErrorResponse(nil, err)
-		if encErr != nil {
-			return nil, encErr
-		}
-		return encodeReadyForQuery(ebuf, pg.session.txStatus)
+		return pg.queryFailed(query, err)
 	}
 
 	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)

@@ -58,6 +58,11 @@ func TestDecodeParam(t *testing.T) {
 	})
 }
 
+func TestNormalizeDriverValueError(t *testing.T) {
+	_, err := normalizeDriverValue(map[string]any{"bad": make(chan int)})
+	assert.Error(t, err)
+}
+
 func TestFormatCodeAt(t *testing.T) {
 	assert.Equal(t, pgtype.TextFormatCode, formatCodeAt(nil, 0))
 	assert.Equal(t, int16(1), formatCodeAt([]int16{1}, 0))

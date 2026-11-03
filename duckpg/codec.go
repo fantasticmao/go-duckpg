@@ -1,9 +1,11 @@
 package duckpg
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -256,7 +258,41 @@ func encodeReadyForQuery(buf []byte, txStatus byte) ([]byte, error) {
 }
 
 func encodeErrorResponse(buf []byte, err error) ([]byte, error) {
-	return encodeErrorResponseStatus(buf, "ERROR", "XX000", err.Error())
+	return encodeErrorResponseStatus(buf, "ERROR", sqlState(err), err.Error())
+}
+
+// sqlState maps a driver or context error to a PostgreSQL SQLSTATE.
+// Unrecognized errors stay XX000 (internal_error).
+func sqlState(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "57014"
+	}
+	var dbErr *duckdb.Error
+	if errors.As(err, &dbErr) {
+		if code, ok := duckdbSQLState[dbErr.Type]; ok {
+			return code
+		}
+	}
+	return "XX000"
+}
+
+var duckdbSQLState = map[duckdb.ErrorType]string{
+	duckdb.ErrorTypeInterrupt:      "57014",
+	duckdb.ErrorTypeSyntax:         "42601",
+	duckdb.ErrorTypeParser:         "42601",
+	duckdb.ErrorTypeCatalog:        "42P01",
+	duckdb.ErrorTypeConstraint:     "23000",
+	duckdb.ErrorTypeConversion:     "22000",
+	duckdb.ErrorTypeMismatchType:   "22000",
+	duckdb.ErrorTypeInvalidType:    "22000",
+	duckdb.ErrorTypeInvalidInput:   "22000",
+	duckdb.ErrorTypeDivideByZero:   "22012",
+	duckdb.ErrorTypeNotImplemented: "0A000",
+	duckdb.ErrorTypePermission:     "42501",
+	duckdb.ErrorTypeOutOfMemory:    "53200",
+	duckdb.ErrorTypeIO:             "58030",
+	duckdb.ErrorTypeNetwork:        "58030",
+	duckdb.ErrorTypeHTTP:           "58030",
 }
 
 func encodeErrorResponseStatus(buf []byte, severity, code, message string) ([]byte, error) {

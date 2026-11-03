@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/binary"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,11 +63,16 @@ func newSession(db *sql.DB) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
+	secret, err := randomSecretKey()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	s := &session{
 		conn:       conn,
 		txStatus:   'I',
 		processID:  nextBackendPID.Add(1),
-		secretKey:  randomSecretKey(),
+		secretKey:  secret,
 		statements: make(map[string]*preparedStmt),
 		portals:    make(map[string]*portal),
 		settings:   make(map[string]string),
@@ -138,12 +143,12 @@ func (s *session) clearUnnamed() {
 	delete(s.portals, "")
 }
 
-func randomSecretKey() []byte {
+func randomSecretKey() ([]byte, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		binary.BigEndian.PutUint32(b, nextBackendPID.Load()^0xdeadbeef)
+		return nil, fmt.Errorf("cancel secret: %w", err)
 	}
-	return b
+	return b, nil
 }
 
 // commandTag builds a PostgreSQL CommandComplete tag from the SQL and result shape.

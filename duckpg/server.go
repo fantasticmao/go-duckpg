@@ -4,19 +4,16 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"maps"
 	"net"
-	"os"
 	"strings"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
-
-var infoLog = log.New(os.Stdout, "[go-duckpg] ", log.Ldate|log.Ltime)
-var errorLog = log.New(os.Stderr, "[go-duckpg] ", log.Lshortfile)
 
 // defaultServerVersion is the PostgreSQL server_version used when Config.ServerVersion is empty.
 const defaultServerVersion = "15.0"
@@ -28,10 +25,12 @@ const defaultServerVersion = "15.0"
 // handshake after SSLRequest.
 // An empty ServerVersion advertises PostgreSQL 15.0. version() appends the
 // linked DuckDB library version.
+// A nil Logger writes text logs to stderr at Info level. Debug logs include SQL text.
 type Config struct {
 	Users         map[string]string
 	TLS           *tls.Config
 	ServerVersion string
+	Logger        *slog.Logger
 }
 
 // serverVersion is the PostgreSQL server_version for this configuration.
@@ -55,15 +54,16 @@ func Listen(duckdb *sql.DB, address string, cfg Config) error {
 
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
-		return err
+		return fmt.Errorf("listen %s: %w", address, err)
 	}
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			return err
+			_ = listener.Close()
+			return fmt.Errorf("listen %s: %w", address, err)
 		}
-		infoLog.Printf("connection accepted, remote addr: %s\n", conn.RemoteAddr())
+		logAccepted(cfg, conn.RemoteAddr().String())
 		go serve(conn, duckdb, cfg)
 	}
 }
@@ -78,14 +78,8 @@ func serve(conn net.Conn, db *sql.DB, cfg Config) {
 	defer func() { _ = pg.conn.Close() }()
 
 	err := pg.run()
-	user := ""
-	if pg.session != nil {
-		user = pg.session.user
-	}
-	if err != nil {
-		errorLog.Printf("pgwire server run error, user: %s, error: %s\n", user, err.Error())
-	}
-	infoLog.Printf("connection closed, user: %s, remote addr: %s\n", user, conn.RemoteAddr())
+	logRunError(pg, err)
+	logWire(pg, slog.LevelInfo, "connection closed")
 }
 
 type pgWire struct {
@@ -101,7 +95,9 @@ func (pg *pgWire) run() error {
 	if pg.session != nil {
 		defer func() {
 			unregisterSession(pg.session)
-			_ = pg.session.close()
+			if cerr := pg.session.close(); cerr != nil {
+				logWire(pg, slog.LevelError, "session close failed", slog.String("error", cerr.Error()))
+			}
 		}()
 	}
 	if err != nil || stop {
@@ -208,7 +204,7 @@ func (pg *pgWire) openSession(msg *pgproto3.StartupMessage) error {
 	if _, err = pg.conn.Write(buf); err != nil {
 		return fmt.Errorf("write response buffer error: %w", err)
 	}
-	infoLog.Printf("authentication succeeded, user: %s, remote addr: %s\n", user, pg.conn.RemoteAddr())
+	logWire(pg, slog.LevelInfo, "authentication succeeded")
 	return nil
 }
 
@@ -230,22 +226,32 @@ func (pg *pgWire) authenticate(user string) error {
 		return fmt.Errorf("receive password message error: %w", err)
 	}
 	passwordMsg, ok := msg.(*pgproto3.PasswordMessage)
+	if !ok {
+		return pg.fatalClientError("08P01", fmt.Sprintf("expected PasswordMessage, got %T", msg))
+	}
 	want, found := pg.cfg.Users[user]
-	if !ok || !found || !passwordMatch(passwordMsg.Password, want) {
+	if !found || !passwordMatch(passwordMsg.Password, want) {
 		return pg.authFailed()
 	}
 	return nil
 }
 
 func (pg *pgWire) authFailed() error {
-	buf, err := encodeErrorResponseStatus(nil, "FATAL", "28P01", "password authentication failed")
+	return pg.fatalClientError("28P01", "password authentication failed")
+}
+
+// fatalClientError writes a FATAL ErrorResponse, logs it at Warn, and returns
+// an error that serve does not log again.
+func (pg *pgWire) fatalClientError(code, message string) error {
+	buf, err := encodeErrorResponseStatus(nil, "FATAL", code, message)
 	if err != nil {
 		return err
 	}
 	if _, werr := pg.conn.Write(buf); werr != nil {
 		return fmt.Errorf("write response buffer error: %w", werr)
 	}
-	return fmt.Errorf("password authentication failed")
+	logWire(pg, slog.LevelWarn, message, slog.String("sqlstate", code))
+	return loggedError{err: errors.New(message)}
 }
 
 func passwordMatch(got, want string) bool {

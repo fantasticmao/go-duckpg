@@ -1,6 +1,9 @@
 package duckpg
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -96,4 +99,46 @@ func TestEncodeFormattedValue(t *testing.T) {
 	null, err := encodeFormattedValue(nil, pgtype.Int4OID, pgtype.TextFormatCode)
 	assert.NoError(t, err)
 	assert.Nil(t, null)
+}
+
+func TestSQLState(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, "XX000"},
+		{"plain", errors.New("boom"), "XX000"},
+		{"canceled", context.Canceled, "57014"},
+		{"wrapped canceled", fmt.Errorf("query: %w", context.Canceled), "57014"},
+		{
+			"cancel wins over other duckdb error",
+			errors.Join(context.Canceled, &duckdb.Error{Type: duckdb.ErrorTypeInternal, Msg: "INTERNAL Error"}),
+			"57014",
+		},
+		{"interrupt", &duckdb.Error{Type: duckdb.ErrorTypeInterrupt, Msg: "INTERRUPT Error"}, "57014"},
+		{"syntax", &duckdb.Error{Type: duckdb.ErrorTypeSyntax, Msg: "Syntax Error"}, "42601"},
+		{"parser", &duckdb.Error{Type: duckdb.ErrorTypeParser, Msg: "Parser Error"}, "42601"},
+		{"catalog", &duckdb.Error{Type: duckdb.ErrorTypeCatalog, Msg: "Catalog Error"}, "42P01"},
+		{"constraint", &duckdb.Error{Type: duckdb.ErrorTypeConstraint, Msg: "Constraint Error"}, "23000"},
+		{"conversion", &duckdb.Error{Type: duckdb.ErrorTypeConversion, Msg: "Conversion Error"}, "22000"},
+		{"divide", &duckdb.Error{Type: duckdb.ErrorTypeDivideByZero, Msg: "Divide by Zero Error"}, "22012"},
+		{"not implemented", &duckdb.Error{Type: duckdb.ErrorTypeNotImplemented, Msg: "Not implemented Error"}, "0A000"},
+		{"permission", &duckdb.Error{Type: duckdb.ErrorTypePermission, Msg: "Permission Error"}, "42501"},
+		{"oom", &duckdb.Error{Type: duckdb.ErrorTypeOutOfMemory, Msg: "Out of Memory Error"}, "53200"},
+		{"io", &duckdb.Error{Type: duckdb.ErrorTypeIO, Msg: "IO Error"}, "58030"},
+		{"network", &duckdb.Error{Type: duckdb.ErrorTypeNetwork, Msg: "Network Error"}, "58030"},
+		{"http", &duckdb.Error{Type: duckdb.ErrorTypeHTTP, Msg: "HTTP Error"}, "58030"},
+		{"internal stays unknown", &duckdb.Error{Type: duckdb.ErrorTypeInternal, Msg: "INTERNAL Error"}, "XX000"},
+		{
+			"wrapped catalog",
+			fmt.Errorf("driver: %w", &duckdb.Error{Type: duckdb.ErrorTypeCatalog, Msg: "Catalog Error: missing"}),
+			"42P01",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sqlState(tc.err))
+		})
+	}
 }

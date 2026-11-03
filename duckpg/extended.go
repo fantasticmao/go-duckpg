@@ -23,8 +23,10 @@ func (pg *pgWire) extendedError(err error) ([]byte, error) {
 }
 
 func (pg *pgWire) handleParse(msg *pgproto3.Parse) ([]byte, error) {
+	logSQL(pg, msg.Query)
 	ps, err := pg.inspectPrepare(msg.Query, msg.ParameterOIDs)
 	if err != nil {
+		logSQLFailed(pg, msg.Query, err)
 		return pg.extendedError(err)
 	}
 	ps.name = msg.Name
@@ -341,6 +343,7 @@ func (pg *pgWire) executePortalExec(ctx context.Context, p *portal) ([]byte, err
 	result, err := pg.session.conn.ExecContext(ctx, ps.query, p.args...)
 	if err != nil {
 		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
+		logSQLFailed(pg, ps.query, err)
 		return pg.extendedError(err)
 	}
 	rowsAffected := int64(0)
@@ -358,6 +361,7 @@ func (pg *pgWire) executePortalQuery(ctx context.Context, p *portal) ([]byte, er
 	rows, err := pg.session.conn.QueryContext(ctx, ps.query, p.args...)
 	if err != nil {
 		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
+		logSQLFailed(pg, ps.query, err)
 		return pg.extendedError(err)
 	}
 	defer rows.Close()
@@ -381,6 +385,7 @@ func (pg *pgWire) executePortalQuery(ctx context.Context, p *portal) ([]byte, er
 	buf, rowCnt, err := encodeDataRowFormatted(buf, rows, oids, p.resultFormats)
 	if err != nil {
 		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
+		logSQLFailed(pg, ps.query, err)
 		return pg.extendedError(err)
 	}
 
@@ -454,7 +459,10 @@ func encodeFormattedValue(data any, oid uint32, format int16) ([]byte, error) {
 	if data == nil {
 		return nil, nil
 	}
-	data = normalizeDriverValue(data)
+	data, err := normalizeDriverValue(data)
+	if err != nil {
+		return nil, err
+	}
 	if format == pgtype.TextFormatCode {
 		return encodeTextValue(data, oid)
 	}
@@ -520,44 +528,44 @@ func valueForBinaryEncode(data any, oid uint32) (any, error) {
 	}
 }
 
-func normalizeDriverValue(data any) any {
+func normalizeDriverValue(data any) (any, error) {
 	switch d := data.(type) {
 	case duckdb.Decimal:
-		return d.String()
+		return d.String(), nil
 	case duckdb.Interval:
-		return formatInterval(d)
+		return formatInterval(d), nil
 	case *big.Int:
 		if d == nil {
-			return nil
+			return nil, nil
 		}
-		return d.String()
+		return d.String(), nil
 	case big.Int:
-		return d.String()
+		return d.String(), nil
 	case duckdb.Union:
 		b, err := encodeTextValue(d, pgtype.JSONOID)
 		if err != nil {
-			return fmt.Sprint(d)
+			return nil, err
 		}
-		return string(b)
+		return string(b), nil
 	case *duckdb.OrderedMap:
 		b, err := d.MarshalJSON()
 		if err != nil {
-			return d.String()
+			return nil, err
 		}
-		return string(b)
+		return string(b), nil
 	case duckdb.OrderedMap:
 		b, err := d.MarshalJSON()
 		if err != nil {
-			return d.String()
+			return nil, err
 		}
-		return string(b)
+		return string(b), nil
 	case []any, map[string]any:
 		b, err := encodeTextValue(d, pgtype.JSONOID)
 		if err != nil {
-			return fmt.Sprint(d)
+			return nil, err
 		}
-		return string(b)
+		return string(b), nil
 	default:
-		return data
+		return data, nil
 	}
 }
