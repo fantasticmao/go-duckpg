@@ -13,6 +13,20 @@ go-duckpg is a Go library that provides the wire protocol of [PostgreSQL](https:
 
 ![usage.png](docs/usage.png)
 
+## PostgreSQL wire vs Quack
+
+A DuckDB database reaches another process through the PostgreSQL wire protocol that go-duckpg implements, or through [Quack](https://duckdb.org/docs/2.0/quack/overview). The table below lists the differences in detail.
+
+|                    | PostgreSQL wire                                                                                        | Quack                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| **Clients**        | `psql`, JDBC, and libpq connect directly.                                                              | The other side is a DuckDB instance, including DuckDB-Wasm in a browser.                                        |
+| **SQL**            | DuckDB executes the statement, and `pg_catalog` and the PostgreSQL dialect stay unimplemented.         | Every DuckDB feature visible to the serving session can run.                                                    |
+| **Types**          | Each column uses the nearest PostgreSQL type, and `LIST`, `STRUCT`, `MAP`, and `ARRAY` travel as JSON. | `application/duckdb` keeps nested values, decimals, and intervals lossless.                                     |
+| **Transport**      | Messages use the PostgreSQL frontend/backend protocol on a caller-chosen TCP port.                     | Messages use HTTP or HTTPS on port 9494 by default, and an ordinary reverse proxy can stand in front.           |
+| **Results**        | The connection returns one row-oriented text or binary stream.                                         | After the handshake, one request completes a query, and large results continue through parallel `FETCH` chunks. |
+| **Authentication** | A non-nil `Users` checks a cleartext password, and a non-nil `Config.TLS` completes TLS.               | A token is required, the default bind is localhost, and a non-local URI uses HTTPS.                             |
+| **Hosting**        | The caller opens DuckDB and passes `*sql.DB` to `Listen`, and each socket holds one pooled connection. | The `quack` extension serves inside the DuckDB process that owns the data.                                      |
+
 ## Features
 
 - **Simple Query**: executes one SQL string and returns rows or a command completion tag.

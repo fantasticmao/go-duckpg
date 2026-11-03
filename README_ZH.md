@@ -13,6 +13,20 @@ go-duckpg 是一个 Go 语言的库，它为调用方提供的 [DuckDB](https://
 
 ![usage.png](docs/usage.png)
 
+## PostgreSQL 线协议对比 Quack
+
+远程访问一个 DuckDB 数据库时，可以使用 go-duckpg 实现的 PostgreSQL 线协议，也可以使用 [Quack](https://duckdb.org/docs/2.0/quack/overview)。下表逐项列出两者差异。
+
+|            | PostgreSQL 线协议                                                                 | Quack                                                                 |
+| ---------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **客户端** | `psql`、JDBC、libpq 等 PostgreSQL 客户端直接连接。                                | 另一侧是 DuckDB 实例，包括浏览器中的 DuckDB-Wasm。                    |
+| **SQL**    | 语句由 DuckDB 执行，`pg_catalog` 与 PostgreSQL 方言仍未实现。                     | 服务会话可见的 DuckDB 功能均可执行。                                  |
+| **类型**   | 列通告为最接近的 PostgreSQL 类型，`LIST`、`STRUCT`、`MAP`、`ARRAY` 以 JSON 传递。 | `application/duckdb` 保持嵌套类型、小数与 interval 无损。             |
+| **传输**   | 消息使用调用方指定端口上的 PostgreSQL 前端/后端协议。                             | 消息使用 HTTP 或 HTTPS，默认端口为 9494，前面可以放置常规反向代理。   |
+| **结果**   | 该连接返回一条按行的文本或二进制流。                                              | 握手之后一次请求完成查询，大结果通过可并行的 `FETCH` 分块返回。       |
+| **认证**   | `Users` 非 nil 时校验明文密码，`Config.TLS` 非 nil 时完成 TLS。                   | 默认必须携带 token，默认只绑定 localhost，非本地 URI 默认使用 HTTPS。 |
+| **部署**   | 调用方打开 DuckDB 并把 `*sql.DB` 交给 `Listen`，每个套接字占用池中一条连接。      | `quack` 扩展在持有数据的 DuckDB 进程内提供服务。                      |
+
 ## 功能
 
 - **简单查询**：执行一条 SQL，并返回结果行或命令完成标签。
