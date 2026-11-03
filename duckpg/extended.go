@@ -14,12 +14,22 @@ import (
 
 var pgTypeMap = pgtype.NewMap()
 
+// extendedError sends ErrorResponse and skips messages until Sync.
+// An open transaction becomes failed. portalError sets the statement-specific status first.
 func (pg *pgWire) extendedError(err error) ([]byte, error) {
 	pg.session.ignoreUntilSync = true
 	if pg.session.txStatus == 'T' {
 		pg.session.txStatus = 'E'
 	}
 	return encodeErrorResponse(nil, err)
+}
+
+// portalError records a failed portal execution, then returns the extended-protocol error.
+// ReadyForQuery waits for Sync.
+func (pg *pgWire) portalError(query string, err error) ([]byte, error) {
+	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
+	logSQLFailed(pg, query, err)
+	return pg.extendedError(err)
 }
 
 func (pg *pgWire) handleParse(msg *pgproto3.Parse) ([]byte, error) {
@@ -328,53 +338,42 @@ func (pg *pgWire) handleExecute(msg *pgproto3.Execute) ([]byte, error) {
 	ctx, stop := pg.session.queryContext()
 	defer stop()
 	if len(p.stmt.fields) == 0 {
-		return pg.executePortalExec(ctx, p)
+		return pg.execPortal(ctx, p)
 	}
-	return pg.executePortalQuery(ctx, p)
+	return pg.queryPortal(ctx, p)
 }
 
-func (pg *pgWire) executePortalExec(ctx context.Context, p *portal) ([]byte, error) {
+func (pg *pgWire) execPortal(ctx context.Context, p *portal) ([]byte, error) {
 	ps := p.stmt
 	if ps.localTag != "" {
 		pg.session.applyEffect(ps.effect)
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, nil)
-		return encodeCommandComplete(nil, ps.localTag)
+		return pg.completeCommand(nil, ps.query, ps.localTag)
 	}
 	result, err := pg.session.conn.ExecContext(ctx, ps.query, p.args...)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
-		logSQLFailed(pg, ps.query, err)
-		return pg.extendedError(err)
+		return pg.portalError(ps.query, err)
 	}
-	rowsAffected := int64(0)
-	if n, raErr := result.RowsAffected(); raErr == nil {
-		rowsAffected = n
-	}
-	pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, nil)
-	tag := commandTag(ps.query, false, 0, rowsAffected)
-	return encodeCommandComplete(nil, tag)
+	return pg.completeCommand(nil, ps.query, commandTag(ps.query, false, 0, rowsAffected(result)))
 }
 
-func (pg *pgWire) executePortalQuery(ctx context.Context, p *portal) ([]byte, error) {
+func (pg *pgWire) queryPortal(ctx context.Context, p *portal) ([]byte, error) {
 	ps := p.stmt
 	pg.session.applyEffect(ps.effect)
 	rows, err := pg.session.conn.QueryContext(ctx, ps.query, p.args...)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
-		logSQLFailed(pg, ps.query, err)
-		return pg.extendedError(err)
+		return pg.portalError(ps.query, err)
 	}
 	defer rows.Close()
 
 	var buf []byte
-	if !p.described {
+	describe := !p.described
+	if describe {
 		// Portal was not described. Send RowDescription using the Bind result formats
 		// so clients decode DataRow with the same format codes.
 		buf, err = encodeRowDescriptionFields(nil, applyResultFormats(ps.fields, p.resultFormats))
 		if err != nil {
 			return nil, err
 		}
-		p.described = true
 	}
 
 	oids := make([]uint32, len(ps.fields))
@@ -384,14 +383,13 @@ func (pg *pgWire) executePortalQuery(ctx context.Context, p *portal) ([]byte, er
 
 	buf, rowCnt, err := encodeDataRowFormatted(buf, rows, oids, p.resultFormats)
 	if err != nil {
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, err)
-		logSQLFailed(pg, ps.query, err)
-		return pg.extendedError(err)
+		return pg.portalError(ps.query, err)
+	}
+	if describe {
+		p.described = true
 	}
 
-	pg.session.txStatus = updateTxStatus(pg.session.txStatus, ps.query, nil)
-	tag := commandTag(ps.query, true, int64(rowCnt), -1)
-	return encodeCommandComplete(buf, tag)
+	return pg.completeCommand(buf, ps.query, commandTag(ps.query, true, int64(rowCnt), -1))
 }
 
 func (pg *pgWire) handleClose(msg *pgproto3.Close) ([]byte, error) {

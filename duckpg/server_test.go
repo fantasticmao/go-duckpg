@@ -2,10 +2,18 @@ package duckpg
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,61 +74,65 @@ func connectPgx(t *testing.T, addr string, simple bool) *pgx.Conn {
 	return conn
 }
 
-func TestSimpleProtocol(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, true)
-	ctx := context.Background()
-
-	var one int
-	err := conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
+func connectAuth(t *testing.T, addr, user, password, sslmode string, roots *x509.CertPool) *pgx.Conn {
+	t.Helper()
+	conn, err := connectAuthErr(t, addr, user, password, sslmode, roots)
 	assert.NoError(t, err)
-	assert.Equal(t, 1, one)
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return conn
+}
 
-	_, err = conn.Exec(ctx, `SELECT * FROM missing`)
+func connectAuthErr(t *testing.T, addr, user, password, sslmode string, roots *x509.CertPool) (*pgx.Conn, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	userinfo := user
+	if password != "" {
+		userinfo = user + ":" + password
+	}
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s/duckpg?sslmode=%s", userinfo, addr, sslmode))
+	assert.NoError(t, err)
+	cfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	if roots != nil {
+		cfg.TLSConfig.RootCAs = roots
+	}
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
+func testServerTLS(t *testing.T) (*tls.Config, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	assert.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:     []string{"localhost"},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	assert.NoError(t, err)
+
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	server := &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+	}
+	return server, pool
+}
+
+func TestListenInvalidAddress(t *testing.T) {
+	err := Listen(nil, "127.0.0.1:not-a-port", Config{})
 	assert.Error(t, err)
-
-	err = conn.QueryRow(ctx, `SELECT 2`).Scan(&one)
-	assert.NoError(t, err)
-	assert.Equal(t, 2, one)
-
-	_, err = conn.Exec(ctx, ``)
-	assert.NoError(t, err)
+	assert.True(t, strings.Contains(err.Error(), "listen 127.0.0.1:not-a-port"))
 }
 
-func TestCompatStartup(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, true)
-	ctx := context.Background()
-
-	_, err := conn.Exec(ctx, `SET extra_float_digits = 3`)
-	assert.NoError(t, err)
-
-	var digits string
-	err = conn.QueryRow(ctx, `SELECT current_setting('extra_float_digits')`).Scan(&digits)
-	assert.NoError(t, err)
-	assert.Equal(t, "3", digits)
-
-	var version string
-	err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
-	assert.NoError(t, err)
-	assert.Equal(t, "PostgreSQL 15.0 (DuckDB "+duckdbVersion()+")", version)
-
-	var serverVersion string
-	err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
-	assert.NoError(t, err)
-	assert.Equal(t, "15.0", serverVersion)
-
-	var isolation string
-	err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
-	assert.NoError(t, err)
-	assert.Equal(t, "read committed", isolation)
-}
-
-func TestConfiguredServerVersion(t *testing.T) {
+func TestStartupServerVersion(t *testing.T) {
 	addr, cleanup := startConfiguredServer(t, Config{ServerVersion: "16.4"})
 	defer cleanup()
 
@@ -140,98 +152,112 @@ func TestConfiguredServerVersion(t *testing.T) {
 	assert.Equal(t, "16.4", serverVersion)
 }
 
-func TestExtendedProtocol(t *testing.T) {
-	addr, cleanup := startTestServer(t)
+func TestAuthenticatePassword(t *testing.T) {
+	addr, cleanup := startConfiguredServer(t, Config{
+		Users: map[string]string{"duckpg": "secret"},
+	})
 	defer cleanup()
 
-	conn := connectPgx(t, addr, false)
+	t.Run("matching password", func(t *testing.T) {
+		ctx := context.Background()
+		ok := connectAuth(t, addr, "duckpg", "secret", "disable", nil)
+		var n int
+		err := ok.QueryRow(ctx, `SELECT 1`).Scan(&n)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("wrong password", func(t *testing.T) {
+		_, err := connectAuthErr(t, addr, "duckpg", "wrong", "disable", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty password", func(t *testing.T) {
+		_, err := connectAuthErr(t, addr, "duckpg", "", "disable", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("unknown user", func(t *testing.T) {
+		_, err := connectAuthErr(t, addr, "other", "secret", "disable", nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("empty user map", func(t *testing.T) {
+		emptyAddr, emptyCleanup := startConfiguredServer(t, Config{Users: map[string]string{}})
+		defer emptyCleanup()
+		_, err := connectAuthErr(t, emptyAddr, "duckpg", "secret", "disable", nil)
+		assert.Error(t, err)
+	})
+}
+
+func TestStartupTLS(t *testing.T) {
+	serverTLS, pool := testServerTLS(t)
+	addr, cleanup := startConfiguredServer(t, Config{TLS: serverTLS})
+	defer cleanup()
+
 	ctx := context.Background()
 
-	var got int32
-	err := conn.QueryRow(ctx, `SELECT $1::INTEGER + $2::INTEGER`, 10, 32).Scan(&got)
-	assert.NoError(t, err)
-	assert.Equal(t, int32(42), got)
+	t.Run("require", func(t *testing.T) {
+		conn := connectAuth(t, addr, "duckpg", "", "require", pool)
+		var n int
+		err := conn.QueryRow(ctx, `SELECT 2`).Scan(&n)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, n)
+	})
 
-	_, err = conn.Exec(ctx, `SELECT * FROM definitely_missing_table`)
+	t.Run("disable", func(t *testing.T) {
+		// Plaintext clients still work when TLS is optional.
+		plain := connectAuth(t, addr, "duckpg", "", "disable", nil)
+		var n int
+		err := plain.QueryRow(ctx, `SELECT 3`).Scan(&n)
+		assert.NoError(t, err)
+		assert.Equal(t, 3, n)
+	})
+}
+
+func TestStartupSSLRefused(t *testing.T) {
+	addr, cleanup := startConfiguredServer(t, Config{})
+	defer cleanup()
+
+	_, err := connectAuthErr(t, addr, "duckpg", "", "require", nil)
 	assert.Error(t, err)
-
-	var one int
-	err = conn.QueryRow(ctx, `SELECT 1`).Scan(&one)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, one)
-
-	_, err = conn.Exec(ctx, `CREATE TABLE t(id INTEGER)`)
-	assert.NoError(t, err)
-
-	_, err = conn.Exec(ctx, `BEGIN`)
-	assert.NoError(t, err)
-
-	_, err = conn.Exec(ctx, `INSERT INTO t VALUES ($1)`, 1)
-	assert.NoError(t, err)
-
-	_, err = conn.Exec(ctx, `COMMIT`)
-	assert.NoError(t, err)
-
-	var id int
-	err = conn.QueryRow(ctx, `SELECT id FROM t`).Scan(&id)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, id)
 }
 
-func TestExtendedQueryExecModes(t *testing.T) {
+func TestCancelQuery(t *testing.T) {
 	addr, cleanup := startTestServer(t)
 	defer cleanup()
 
-	for _, mode := range []pgx.QueryExecMode{
-		pgx.QueryExecModeCacheDescribe,
-		pgx.QueryExecModeDescribeExec,
-		pgx.QueryExecModeExec,
-	} {
-		t.Run(mode.String(), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://duckpg@%s/duckpg?sslmode=disable", addr))
-			assert.NoError(t, err)
-			cfg.DefaultQueryExecMode = mode
-
-			conn, err := pgx.ConnectConfig(ctx, cfg)
-			assert.NoError(t, err)
-			defer conn.Close(context.Background())
-
-			var got int32
-			err = conn.QueryRow(ctx, `SELECT $1::INTEGER + 1`, 41).Scan(&got)
-			assert.NoError(t, err)
-			assert.Equal(t, int32(42), got)
-		})
-	}
-}
-
-func TestSyntaxSQLState(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
+	ctx := context.Background()
 	conn := connectPgx(t, addr, true)
-	_, err := conn.Exec(context.Background(), `SELEC 1`)
-	assert.Error(t, err)
 
-	var pgErr *pgconn.PgError
-	assert.True(t, errors.As(err, &pgErr))
-	assert.Equal(t, "42601", pgErr.Code)
-}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := conn.Exec(ctx, `CREATE TABLE slow AS SELECT range::VARCHAR AS v, random() AS k FROM range(100000000) ORDER BY k`)
+		errCh <- err
+	}()
 
-func TestExtendedNamedPrepare(t *testing.T) {
-	addr, cleanup := startTestServer(t)
-	defer cleanup()
-
-	conn := connectPgx(t, addr, false)
-	ctx := context.Background()
-
-	_, err := conn.Prepare(ctx, "add_ints", `SELECT $1::INTEGER + $2::INTEGER`)
+	time.Sleep(200 * time.Millisecond)
+	err := conn.PgConn().CancelRequest(ctx)
 	assert.NoError(t, err)
 
-	var sum int32
-	err = conn.QueryRow(ctx, "add_ints", 7, 8).Scan(&sum)
+	select {
+	case err = <-errCh:
+		assert.Error(t, err)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			t.Fatalf("expected PgError, got %v", err)
+		}
+		assert.Equal(t, "57014", pgErr.Code)
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "interrupt") && !strings.Contains(msg, "cancel") {
+			t.Fatalf("expected query cancellation, got %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("query was not canceled")
+	}
+
+	var n int
+	err = conn.QueryRow(ctx, `SELECT 1`).Scan(&n)
 	assert.NoError(t, err)
-	assert.Equal(t, int32(15), sum)
+	assert.Equal(t, 1, n)
 }

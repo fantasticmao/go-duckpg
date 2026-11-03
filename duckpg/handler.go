@@ -2,6 +2,7 @@ package duckpg
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -49,36 +50,6 @@ func (pg *pgWire) dispatch(msg pgproto3.FrontendMessage) ([]byte, error) {
 	}
 }
 
-func (pg *pgWire) startupResponse() ([]byte, error) {
-	buf, err := encodeAuthenticationOk(nil)
-	if err != nil {
-		return nil, err
-	}
-
-	params := [][2]string{
-		{"server_version", pg.cfg.serverVersion()},
-		{"server_encoding", "UTF8"},
-		{"client_encoding", "UTF8"},
-		{"DateStyle", "ISO, MDY"},
-		{"TimeZone", "UTC"},
-		{"integer_datetimes", "on"},
-		{"standard_conforming_strings", "on"},
-	}
-	for _, p := range params {
-		buf, err = encodeParameterStatus(buf, p[0], p[1])
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	buf, err = encodeBackendKeyData(buf, pg.session.processID, pg.session.secretKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return encodeReadyForQuery(buf, pg.session.txStatus)
-}
-
 func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 	query := msg.String
 	logSQL(pg, query)
@@ -95,10 +66,11 @@ func (pg *pgWire) handleQuery(msg *pgproto3.Query) ([]byte, error) {
 		return encodeReadyForQuery(buf, pg.session.txStatus)
 	}
 
-	return pg.executeSimpleQuery(query)
+	return pg.runSimpleQuery(query)
 }
 
-func (pg *pgWire) queryFailed(query string, err error) ([]byte, error) {
+// simpleError reports a simple-query failure: transaction status, log, ErrorResponse, and ReadyForQuery.
+func (pg *pgWire) simpleError(query string, err error) ([]byte, error) {
 	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, err)
 	logSQLFailed(pg, query, err)
 	buf, encErr := encodeErrorResponse(nil, err)
@@ -108,15 +80,14 @@ func (pg *pgWire) queryFailed(query string, err error) ([]byte, error) {
 	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
-func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
+func (pg *pgWire) runSimpleQuery(query string) ([]byte, error) {
 	ctx, stop := pg.session.queryContext()
 	defer stop()
 	class := classifyCompat(query, pg.session)
 	switch class.kind {
 	case compatLocal:
 		pg.session.applyEffect(class.effect)
-		pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
-		buf, err := encodeCommandComplete(nil, class.tag)
+		buf, err := pg.completeCommand(nil, query, class.tag)
 		if err != nil {
 			return nil, err
 		}
@@ -127,9 +98,9 @@ func (pg *pgWire) executeSimpleQuery(query string) ([]byte, error) {
 	}
 
 	if prefersExec(query) {
-		return pg.executeExec(ctx, query)
+		return pg.execSimple(ctx, query)
 	}
-	return pg.executeQuery(ctx, query)
+	return pg.querySimple(ctx, query)
 }
 
 func prefersExec(query string) bool {
@@ -144,48 +115,52 @@ func prefersExec(query string) bool {
 	}
 }
 
-func (pg *pgWire) executeExec(ctx context.Context, query string) ([]byte, error) {
+// completeCommand records a successful statement and appends CommandComplete.
+// Simple queries append ReadyForQuery themselves. The extended protocol waits for Sync.
+func (pg *pgWire) completeCommand(buf []byte, query, tag string) ([]byte, error) {
+	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
+	return encodeCommandComplete(buf, tag)
+}
+
+func rowsAffected(result sql.Result) int64 {
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (pg *pgWire) execSimple(ctx context.Context, query string) ([]byte, error) {
 	result, err := pg.session.conn.ExecContext(ctx, query)
 	if err != nil {
-		return pg.queryFailed(query, err)
+		return pg.simpleError(query, err)
 	}
 
-	rowsAffected := int64(0)
-	if n, raErr := result.RowsAffected(); raErr == nil {
-		rowsAffected = n
-	}
-
-	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
-	tag := commandTag(query, false, 0, rowsAffected)
-
-	buf, err := encodeCommandComplete(nil, tag)
+	buf, err := pg.completeCommand(nil, query, commandTag(query, false, 0, rowsAffected(result)))
 	if err != nil {
 		return nil, err
 	}
 	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
-func (pg *pgWire) executeQuery(ctx context.Context, query string) ([]byte, error) {
+func (pg *pgWire) querySimple(ctx context.Context, query string) ([]byte, error) {
 	rows, err := pg.session.conn.QueryContext(ctx, query)
 	if err != nil {
-		return pg.queryFailed(query, err)
+		return pg.simpleError(query, err)
 	}
 	defer rows.Close()
 
 	buf, oids, err := encodeRowDescription(nil, rows)
 	if err != nil {
-		return pg.queryFailed(query, err)
+		return pg.simpleError(query, err)
 	}
 
 	buf, rowCnt, err := encodeDataRow(buf, rows, oids)
 	if err != nil {
-		return pg.queryFailed(query, err)
+		return pg.simpleError(query, err)
 	}
 
-	pg.session.txStatus = updateTxStatus(pg.session.txStatus, query, nil)
-	tag := commandTag(query, true, int64(rowCnt), -1)
-
-	buf, err = encodeCommandComplete(buf, tag)
+	buf, err = pg.completeCommand(buf, query, commandTag(query, true, int64(rowCnt), -1))
 	if err != nil {
 		return nil, err
 	}

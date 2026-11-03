@@ -1,6 +1,7 @@
 package duckpg
 
 import (
+	"context"
 	"testing"
 
 	"github.com/zeebo/assert"
@@ -113,4 +114,35 @@ func TestApplyCompatEffect(t *testing.T) {
 	after := classifyCompat(`SELECT current_setting('extra_float_digits')`, s)
 	assert.Equal(t, compatRewrite, after.kind)
 	assert.Equal(t, `SELECT '3' AS current_setting`, after.sql)
+}
+
+func TestCompatStatements(t *testing.T) {
+	addr, cleanup := startTestServer(t)
+	defer cleanup()
+
+	conn := connectPgx(t, addr, true)
+	ctx := context.Background()
+
+	_, err := conn.Exec(ctx, `SET extra_float_digits = 3`)
+	assert.NoError(t, err)
+
+	var digits string
+	err = conn.QueryRow(ctx, `SELECT current_setting('extra_float_digits')`).Scan(&digits)
+	assert.NoError(t, err)
+	assert.Equal(t, "3", digits)
+
+	var version string
+	err = conn.QueryRow(ctx, `SELECT version()`).Scan(&version)
+	assert.NoError(t, err)
+	assert.Equal(t, "PostgreSQL 15.0 (DuckDB "+duckdbVersion()+")", version)
+
+	var serverVersion string
+	err = conn.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion)
+	assert.NoError(t, err)
+	assert.Equal(t, "15.0", serverVersion)
+
+	var isolation string
+	err = conn.QueryRow(ctx, `SHOW transaction_isolation`).Scan(&isolation)
+	assert.NoError(t, err)
+	assert.Equal(t, "read committed", isolation)
 }

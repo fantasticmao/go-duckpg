@@ -141,7 +141,7 @@ func (pg *pgWire) startup() (stop bool, err error) {
 			}
 			continue
 		case *pgproto3.StartupMessage:
-			if err := pg.openSession(m); err != nil {
+			if err := pg.acceptStartup(m); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -179,7 +179,7 @@ func (pg *pgWire) handleSSLRequest() error {
 	return nil
 }
 
-func (pg *pgWire) openSession(msg *pgproto3.StartupMessage) error {
+func (pg *pgWire) acceptStartup(msg *pgproto3.StartupMessage) error {
 	sess, err := newSession(pg.db)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -231,13 +231,39 @@ func (pg *pgWire) authenticate(user string) error {
 	}
 	want, found := pg.cfg.Users[user]
 	if !found || !passwordMatch(passwordMsg.Password, want) {
-		return pg.authFailed()
+		return pg.fatalClientError("28P01", "password authentication failed")
 	}
 	return nil
 }
 
-func (pg *pgWire) authFailed() error {
-	return pg.fatalClientError("28P01", "password authentication failed")
+func (pg *pgWire) startupResponse() ([]byte, error) {
+	buf, err := encodeAuthenticationOk(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	params := [][2]string{
+		{"server_version", pg.cfg.serverVersion()},
+		{"server_encoding", "UTF8"},
+		{"client_encoding", "UTF8"},
+		{"DateStyle", "ISO, MDY"},
+		{"TimeZone", "UTC"},
+		{"integer_datetimes", "on"},
+		{"standard_conforming_strings", "on"},
+	}
+	for _, p := range params {
+		buf, err = encodeParameterStatus(buf, p[0], p[1])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	buf, err = encodeBackendKeyData(buf, pg.session.processID, pg.session.secretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return encodeReadyForQuery(buf, pg.session.txStatus)
 }
 
 // fatalClientError writes a FATAL ErrorResponse, logs it at Warn, and returns

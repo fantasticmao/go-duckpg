@@ -79,28 +79,6 @@ func TestEncodeTextValue(t *testing.T) {
 	}
 }
 
-func TestEncodeFormattedValue(t *testing.T) {
-	text, err := encodeFormattedValue(int32(42), pgtype.Int4OID, pgtype.TextFormatCode)
-	assert.NoError(t, err)
-	assert.Equal(t, "42", string(text))
-
-	bin, err := encodeFormattedValue(int32(42), pgtype.Int4OID, pgtype.BinaryFormatCode)
-	assert.NoError(t, err)
-	var i32 int32
-	assert.NoError(t, pgTypeMap.Scan(pgtype.Int4OID, pgtype.BinaryFormatCode, bin, &i32))
-	assert.Equal(t, int32(42), i32)
-
-	bin, err = encodeFormattedValue(true, pgtype.BoolOID, pgtype.BinaryFormatCode)
-	assert.NoError(t, err)
-	var b bool
-	assert.NoError(t, pgTypeMap.Scan(pgtype.BoolOID, pgtype.BinaryFormatCode, bin, &b))
-	assert.True(t, b)
-
-	null, err := encodeFormattedValue(nil, pgtype.Int4OID, pgtype.TextFormatCode)
-	assert.NoError(t, err)
-	assert.Nil(t, null)
-}
-
 func TestSQLState(t *testing.T) {
 	cases := []struct {
 		name string

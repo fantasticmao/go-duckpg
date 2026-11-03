@@ -58,19 +58,28 @@ func TestUpdateTxStatus(t *testing.T) {
 	}
 }
 
-func TestPrefersExec(t *testing.T) {
-	cases := []struct {
-		query string
-		want  bool
-	}{
-		{"INSERT INTO t VALUES (1)", true},
-		{"BEGIN", true},
-		{"CREATE TABLE t(i INT)", true},
-		{"SELECT 1", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.query, func(t *testing.T) {
-			assert.Equal(t, tc.want, prefersExec(tc.query))
-		})
-	}
+func TestCancelBackendSecret(t *testing.T) {
+	s := &session{processID: 4242, secretKey: []byte{1, 2, 3, 4}}
+	registerSession(s)
+	defer unregisterSession(s)
+
+	called := false
+	s.mu.Lock()
+	s.cancelQuery = func() { called = true }
+	s.mu.Unlock()
+
+	t.Run("wrong secret", func(t *testing.T) {
+		cancelBackend(4242, []byte{9, 9, 9, 9})
+		assert.False(t, called)
+	})
+
+	t.Run("unknown process", func(t *testing.T) {
+		cancelBackend(1, []byte{1, 2, 3, 4})
+		assert.False(t, called)
+	})
+
+	t.Run("matching secret", func(t *testing.T) {
+		cancelBackend(4242, []byte{1, 2, 3, 4})
+		assert.True(t, called)
+	})
 }

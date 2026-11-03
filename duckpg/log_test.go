@@ -47,7 +47,7 @@ func waitLog(t *testing.T, buf *lockedBuf, substr string) string {
 	return ""
 }
 
-func TestNilLoggerInfoLevel(t *testing.T) {
+func TestLoggerDefaultLevel(t *testing.T) {
 	logger := Config{}.logger()
 	ctx := context.Background()
 	assert.True(t, logger.Enabled(ctx, slog.LevelInfo))
@@ -69,13 +69,7 @@ func TestTruncateQuery(t *testing.T) {
 	assert.Equal(t, strings.Repeat("你", maxQueryLogRunes)+"...", truncateQuery(long))
 }
 
-func TestListenBadAddress(t *testing.T) {
-	err := Listen(nil, "127.0.0.1:not-a-port", Config{})
-	assert.Error(t, err)
-	assert.True(t, strings.Contains(err.Error(), "listen 127.0.0.1:not-a-port"))
-}
-
-func TestAuthFailureLog(t *testing.T) {
+func TestLogAuthFailure(t *testing.T) {
 	buf := &lockedBuf{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
 	addr, cleanup := startConfiguredServer(t, Config{
@@ -94,7 +88,7 @@ func TestAuthFailureLog(t *testing.T) {
 	assert.False(t, strings.Contains(text, "level=ERROR"))
 }
 
-func TestQueryHiddenAtInfo(t *testing.T) {
+func TestLogOmitsQueryAtInfo(t *testing.T) {
 	buf := &lockedBuf{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
 	addr, cleanup := startConfiguredServer(t, Config{Logger: logger})
@@ -108,7 +102,7 @@ func TestQueryHiddenAtInfo(t *testing.T) {
 	assert.False(t, strings.Contains(buf.String(), "duckpg_log_marker_8675309"))
 }
 
-func TestFailedQueryTruncated(t *testing.T) {
+func TestLogTruncatesFailedQuery(t *testing.T) {
 	buf := &lockedBuf{}
 	logger := slog.New(slog.NewTextHandler(buf, nil))
 	addr, cleanup := startConfiguredServer(t, Config{Logger: logger})
@@ -127,7 +121,7 @@ func TestFailedQueryTruncated(t *testing.T) {
 	assert.True(t, strings.Contains(text, "..."))
 }
 
-func TestExtendedQueryLoggedAtDebug(t *testing.T) {
+func TestLogExtendedQueryAtDebug(t *testing.T) {
 	buf := &lockedBuf{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	addr, cleanup := startConfiguredServer(t, Config{Logger: logger})
@@ -141,7 +135,7 @@ func TestExtendedQueryLoggedAtDebug(t *testing.T) {
 	waitLog(t, buf, "24681357")
 }
 
-func TestClientDisconnectNotError(t *testing.T) {
+func TestLogClientDisconnect(t *testing.T) {
 	buf := &lockedBuf{}
 	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	addr, cleanup := startConfiguredServer(t, Config{Logger: logger})
