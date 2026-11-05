@@ -1,4 +1,4 @@
-package main
+package benchmarks
 
 import (
 	"context"
@@ -15,43 +15,42 @@ type duckpgBackend struct {
 	addr string
 }
 
-func newDuckpg() *duckpgBackend {
-	return &duckpgBackend{}
-}
-
-func (d *duckpgBackend) Name() string { return "duckpg" }
-
-func (d *duckpgBackend) Prepare(ctx context.Context, rows int) (Checksum, error) {
+func startDuckpg(ctx context.Context, rows int) (backend, checksum, error) {
 	db, err := openDuckDB()
 	if err != nil {
-		return Checksum{}, err
+		return nil, checksum{}, err
 	}
-	d.db = db
+	d := &duckpgBackend{db: db}
 	if err := seedBench(ctx, db, rows); err != nil {
-		return Checksum{}, err
+		return failBackend(d, err)
 	}
 	addr, err := listenDuckpg(db)
 	if err != nil {
-		return Checksum{}, err
+		return failBackend(d, err)
 	}
 	d.addr = addr
-	session, err := d.Session(ctx)
+	s, err := d.session(ctx)
 	if err != nil {
-		return Checksum{}, err
+		return failBackend(d, err)
 	}
-	defer session.Close()
-	sum, err := readChecksum(ctx, session, rows)
+	sum, err := readChecksum(ctx, s, rows)
+	closeErr := s.close()
 	if err != nil {
-		return Checksum{}, fmt.Errorf("duckpg: %w", err)
+		return failBackend(d, fmt.Errorf("duckpg: %w", err))
 	}
-	return sum, nil
+	if closeErr != nil {
+		return failBackend(d, fmt.Errorf("duckpg: %w", closeErr))
+	}
+	return d, sum, nil
 }
 
-func (d *duckpgBackend) Session(ctx context.Context) (Session, error) {
-	return d.Dial(ctx)
+func (d *duckpgBackend) name() string { return "duckpg" }
+
+func (d *duckpgBackend) session(ctx context.Context) (session, error) {
+	return d.dial(ctx)
 }
 
-func (d *duckpgBackend) Dial(ctx context.Context) (Session, error) {
+func (d *duckpgBackend) dial(ctx context.Context) (session, error) {
 	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://duckpg@%s/duckpg?sslmode=disable", d.addr))
 	if err != nil {
 		return nil, err
@@ -64,7 +63,7 @@ func (d *duckpgBackend) Dial(ctx context.Context) (Session, error) {
 	return &pgxSession{conn: conn}, nil
 }
 
-func (d *duckpgBackend) Close() error {
+func (d *duckpgBackend) close() error {
 	if d.db == nil {
 		return nil
 	}
@@ -87,7 +86,7 @@ func listenDuckpg(db *sql.DB) (string, error) {
 			last = err
 			continue
 		}
-		fmt.Fprintf(stderr, "duckpg listening on %s\n", addr)
+		logger.Info("duckpg listening", "addr", addr)
 		return addr, nil
 	}
 	return "", fmt.Errorf("duckpg listen: %w", last)
@@ -129,12 +128,12 @@ type pgxSession struct {
 	conn *pgx.Conn
 }
 
-func (s *pgxSession) Exec(ctx context.Context, query string) error {
+func (s *pgxSession) exec(ctx context.Context, query string) error {
 	_, err := s.conn.Exec(ctx, query)
 	return err
 }
 
-func (s *pgxSession) Query(ctx context.Context, query string) (resultRows, error) {
+func (s *pgxSession) query(ctx context.Context, query string) (resultRows, error) {
 	rows, err := s.conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
@@ -142,7 +141,7 @@ func (s *pgxSession) Query(ctx context.Context, query string) (resultRows, error
 	return pgxRowSet{Rows: rows}, nil
 }
 
-func (s *pgxSession) Close() error {
+func (s *pgxSession) close() error {
 	return s.conn.Close(context.Background())
 }
 

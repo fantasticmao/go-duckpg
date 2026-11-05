@@ -40,11 +40,11 @@ go-duckpg 是一个 Go 语言的库，它为调用方提供的 [DuckDB](https://
 
 ### 本机基准
 
-[基准](benchmarks/README.md) 在同一台机器上比较进程内 duckdb-go、go-duckpg 与 Quack。下面的数字来自 Go 1.27.1、DuckDB v2.0.0 和 8 个 CPU，表为 10 万行。每个倍数是中位耗时除以进程内耗时。
+[基准](benchmarks/README.md) 在同一台机器上比较进程内 duckdb-go、go-duckpg 与 Quack。下面的数字来自 Go 1.27.1、DuckDB v2.0.0 和 8 个 CPU 的 Apple M3，表为 10 万行。每个倍数是该路径的 ns/op 除以进程内的 ns/op。
 
-- **小结果**：对于 `SELECT 1`、全表聚合、点查和单行插入，go-duckpg 是进程内 duckdb-go 的 1.1–1.7 倍，Quack 是 2.0–3.7 倍。
+- **小结果**：对于 `SELECT 1`、全表聚合、点查和单行插入，go-duckpg 是进程内 duckdb-go 的 1.2–1.8 倍，Quack 是 1.9–3.7 倍。
 - **批量扫描**：10 万行扫描中，Quack 为进程内的 1.2 倍，go-duckpg 为 2.9 倍。
-- **新建会话**：打开一个 go-duckpg 会话约 0.12 ms，一次 Quack `ATTACH` 加 `CONNECT` 约 2.9 ms。
+- **新建会话**：go-duckpg 打开并关闭一个会话约 0.083 ms，Quack 完成 `ATTACH`、`CONNECT` 再断开约 3.3 ms。
 
 ## 下载与安装
 

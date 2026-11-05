@@ -40,11 +40,11 @@ A DuckDB database reaches another process through the PostgreSQL wire protocol t
 
 ### Localhost benchmark
 
-The [benchmark](benchmarks/README.md) compares in-process duckdb-go, go-duckpg, and Quack on one machine. The figures below come from Go 1.27.1, DuckDB v2.0.0, and 8 CPUs, with a table of 100,000 rows. Each ratio is a median elapsed time divided by the in-process time.
+The [benchmark](benchmarks/README.md) compares in-process duckdb-go, go-duckpg, and Quack on one machine. The figures below come from Go 1.27.1, DuckDB v2.0.0, and an Apple M3 with 8 CPUs, on a table of 100,000 rows. Each ratio divides that path's ns/op by the in-process ns/op.
 
-- **Small results**: go-duckpg is 1.1–1.7× in-process duckdb-go, and Quack is 2.0–3.7×, for `SELECT 1`, a full-table aggregate, a point read, and a single-row insert.
+- **Small results**: go-duckpg is 1.2–1.8× in-process duckdb-go, and Quack is 1.9–3.7×, for `SELECT 1`, a full-table aggregate, a point read, and a single-row insert.
 - **Bulk scans**: a 100,000-row scan is 1.2× in-process for Quack and 2.9× for go-duckpg.
-- **New sessions**: a go-duckpg session opens in about 0.12 ms, and a Quack `ATTACH` plus `CONNECT` takes about 2.9 ms.
+- **New sessions**: go-duckpg opens and closes one session in about 0.083 ms, and Quack takes about 3.3 ms to `ATTACH`, `CONNECT`, and detach.
 
 ## Download and Install
 

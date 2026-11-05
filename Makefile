@@ -1,6 +1,6 @@
 VERSION=$(shell cat VERSION)
 
-.PHONY: get format test run-example release
+.PHONY: get format test benchmark run-example release
 
 get:
 	go get -u -t ./...
@@ -11,11 +11,11 @@ format:
 test:
 	go test ./duckpg/... -race -coverpkg=./duckpg/... -coverprofile=coverage.txt -covermode=atomic -v
 
+benchmark:
+	go test -bench=. -count=1 ./benchmarks
+
 run-example:
 	go run ./examples
-
-run-benchmark:
-	go run ./benchmarks
 
 release:
 	git tag "$(VERSION)"

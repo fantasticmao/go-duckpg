@@ -1,19 +1,26 @@
-package main
+package benchmarks
 
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
 	"net"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
-const parallelWorkers = 4
+var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	Level: slog.LevelInfo,
+}))
 
 // resultRows is the subset of database/sql and pgx row cursors used by the workloads.
 type resultRows interface {
@@ -23,40 +30,38 @@ type resultRows interface {
 	Close()
 }
 
-// Session is one long-lived client session.
-type Session interface {
-	Exec(ctx context.Context, query string) error
-	Query(ctx context.Context, query string) (resultRows, error)
-	Close() error
+// session is one long-lived client session.
+type session interface {
+	exec(ctx context.Context, query string) error
+	query(ctx context.Context, query string) (resultRows, error)
+	close() error
 }
 
-// Backend is one access path. Prepare seeds an independent in-memory database.
-// Session opens a connection for timed queries. Dial opens a connection whose
-// establishment cost is the connect workload.
-type Backend interface {
-	Name() string
-	Prepare(ctx context.Context, rows int) (Checksum, error)
-	Session(ctx context.Context) (Session, error)
-	Dial(ctx context.Context) (Session, error)
-	Close() error
+// backend is one access path. session opens a connection for timed queries.
+// dial opens a connection whose establishment cost is the connect benchmark.
+type backend interface {
+	name() string
+	session(ctx context.Context) (session, error)
+	dial(ctx context.Context) (session, error)
+	close() error
 }
 
-// Checksum is the gate compared across access paths before timing starts.
-type Checksum struct {
-	Count     int64
-	SumID     int64
-	SumAmount float64
+// checksum is the gate compared across access paths before timing starts.
+type checksum struct {
+	count     int64
+	sumID     int64
+	sumAmount float64
 }
 
-func (c Checksum) equal(o Checksum) bool {
-	if c.Count != o.Count || c.SumID != o.SumID {
+func (c checksum) equal(o checksum) bool {
+	if c.count != o.count || c.sumID != o.sumID {
 		return false
 	}
-	return math.Abs(c.SumAmount-o.SumAmount) <= 0.01
+	return math.Abs(c.sumAmount-o.sumAmount) <= 0.01
 }
 
-func (c Checksum) String() string {
-	return fmt.Sprintf("count=%d sum_id=%d sum_amount=%g", c.Count, c.SumID, c.SumAmount)
+func (c checksum) String() string {
+	return fmt.Sprintf("count=%d sum_id=%d sum_amount=%g", c.count, c.sumID, c.sumAmount)
 }
 
 type sqlRowSet struct{ *sql.Rows }
@@ -68,12 +73,12 @@ type sqlSession struct {
 	onClose []string
 }
 
-func (s *sqlSession) Exec(ctx context.Context, query string) error {
+func (s *sqlSession) exec(ctx context.Context, query string) error {
 	_, err := s.conn.ExecContext(ctx, query)
 	return err
 }
 
-func (s *sqlSession) Query(ctx context.Context, query string) (resultRows, error) {
+func (s *sqlSession) query(ctx context.Context, query string) (resultRows, error) {
 	rows, err := s.conn.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -81,7 +86,7 @@ func (s *sqlSession) Query(ctx context.Context, query string) (resultRows, error
 	return sqlRowSet{rows}, nil
 }
 
-func (s *sqlSession) Close() error {
+func (s *sqlSession) close() error {
 	var err error
 	for _, query := range s.onClose {
 		if _, execErr := s.conn.ExecContext(context.Background(), query); execErr != nil && err == nil {
@@ -94,13 +99,32 @@ func (s *sqlSession) Close() error {
 	return err
 }
 
+// connLimit is the DuckDB pool size. Parallel benchmarks hold one connection
+// per GOMAXPROCS goroutine, and -cpu may raise GOMAXPROCS after the pool opens.
+func connLimit() int {
+	limit := runtime.GOMAXPROCS(0)
+	if f := flag.Lookup("test.cpu"); f != nil {
+		for _, part := range strings.Split(f.Value.String(), ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(part))
+			if err == nil && n > limit {
+				limit = n
+			}
+		}
+	}
+	if limit < 16 {
+		limit = 16
+	}
+	return limit
+}
+
 func openDuckDB() (*sql.DB, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(16)
-	db.SetMaxIdleConns(16)
+	limit := connLimit()
+	db.SetMaxOpenConns(limit)
+	db.SetMaxIdleConns(limit)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -128,74 +152,56 @@ func seedBench(ctx context.Context, db *sql.DB, rows int) error {
 	return nil
 }
 
-const checksumSQL = `SELECT count(*)::BIGINT, coalesce(sum(id), 0)::BIGINT, coalesce(sum(amount), 0)::DOUBLE FROM bench`
+const checksumSQL = `SELECT count(*)::BIGINT, coalesce(sum(id), 0)::BIGINT, ` +
+	`coalesce(sum(amount), 0)::DOUBLE FROM bench`
 
-func readChecksum(ctx context.Context, s Session, rows int) (Checksum, error) {
-	rs, err := s.Query(ctx, checksumSQL)
+func readChecksum(ctx context.Context, s session, rows int) (checksum, error) {
+	rs, err := s.query(ctx, checksumSQL)
 	if err != nil {
-		return Checksum{}, err
+		return checksum{}, err
 	}
 	defer rs.Close()
 	if !rs.Next() {
 		if err := rs.Err(); err != nil {
-			return Checksum{}, err
+			return checksum{}, err
 		}
-		return Checksum{}, fmt.Errorf("checksum returned no row")
+		return checksum{}, fmt.Errorf("checksum returned no row")
 	}
 	var count, sumID, sumAmount any
 	if err := rs.Scan(&count, &sumID, &sumAmount); err != nil {
-		return Checksum{}, err
+		return checksum{}, err
 	}
 	if rs.Next() {
-		return Checksum{}, fmt.Errorf("checksum returned more than one row")
+		return checksum{}, fmt.Errorf("checksum returned more than one row")
 	}
 	if err := rs.Err(); err != nil {
-		return Checksum{}, err
+		return checksum{}, err
 	}
 	gotCount, err := toInt64(count)
 	if err != nil {
-		return Checksum{}, fmt.Errorf("checksum count: %w", err)
+		return checksum{}, fmt.Errorf("checksum count: %w", err)
 	}
 	gotID, err := toInt64(sumID)
 	if err != nil {
-		return Checksum{}, fmt.Errorf("checksum sum(id): %w", err)
+		return checksum{}, fmt.Errorf("checksum sum(id): %w", err)
 	}
 	gotAmount, err := toFloat64(sumAmount)
 	if err != nil {
-		return Checksum{}, fmt.Errorf("checksum sum(amount): %w", err)
+		return checksum{}, fmt.Errorf("checksum sum(amount): %w", err)
 	}
-	sum := Checksum{Count: gotCount, SumID: gotID, SumAmount: gotAmount}
-	if sum.Count != int64(rows) {
-		return sum, fmt.Errorf("checksum count %d, want %d", sum.Count, rows)
+	sum := checksum{count: gotCount, sumID: gotID, sumAmount: gotAmount}
+	if sum.count != int64(rows) {
+		return sum, fmt.Errorf("checksum count %d, want %d", sum.count, rows)
 	}
 	wantID := int64(rows) * int64(rows-1) / 2
-	if sum.SumID != wantID {
-		return sum, fmt.Errorf("checksum sum(id) %d, want %d", sum.SumID, wantID)
+	if sum.sumID != wantID {
+		return sum, fmt.Errorf("checksum sum(id) %d, want %d", sum.sumID, wantID)
 	}
 	return sum, nil
 }
 
-func queryVersion(ctx context.Context, s Session) (string, error) {
-	rs, err := s.Query(ctx, `SELECT version()`)
-	if err != nil {
-		return "", err
-	}
-	defer rs.Close()
-	if !rs.Next() {
-		if err := rs.Err(); err != nil {
-			return "", err
-		}
-		return "", fmt.Errorf("version() returned no row")
-	}
-	var v any
-	if err := rs.Scan(&v); err != nil {
-		return "", err
-	}
-	return fmt.Sprint(v), rs.Err()
-}
-
-func querySelect1(ctx context.Context, s Session) error {
-	rs, err := s.Query(ctx, `SELECT 1`)
+func querySelect1(ctx context.Context, s session) error {
+	rs, err := s.query(ctx, `SELECT 1`)
 	if err != nil {
 		return err
 	}
@@ -220,8 +226,8 @@ func querySelect1(ctx context.Context, s Session) error {
 	return rs.Err()
 }
 
-func queryAggregate(ctx context.Context, s Session, rows int) error {
-	rs, err := s.Query(ctx, `SELECT count(*), sum(amount) FROM bench`)
+func queryAggregate(ctx context.Context, s session, rows int) error {
+	rs, err := s.query(ctx, `SELECT count(*), sum(amount) FROM bench`)
 	if err != nil {
 		return err
 	}
@@ -253,9 +259,9 @@ func queryAggregate(ctx context.Context, s Session, rows int) error {
 	return rs.Err()
 }
 
-func queryPoint(ctx context.Context, s Session, id int) error {
+func queryPoint(ctx context.Context, s session, id int) error {
 	query := fmt.Sprintf("SELECT id, k, s, amount, ts FROM bench WHERE id = %d", id)
-	rs, err := s.Query(ctx, query)
+	rs, err := s.query(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -270,9 +276,9 @@ func queryPoint(ctx context.Context, s Session, id int) error {
 	return nil
 }
 
-func queryScan(ctx context.Context, s Session, n int) error {
+func queryScan(ctx context.Context, s session, n int) error {
 	query := fmt.Sprintf("SELECT id, k, s, amount, ts FROM bench LIMIT %d", n)
-	rs, err := s.Query(ctx, query)
+	rs, err := s.query(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -290,9 +296,9 @@ func queryScan(ctx context.Context, s Session, n int) error {
 	return nil
 }
 
-func execInsert(ctx context.Context, s Session, id int) error {
+func execInsert(ctx context.Context, s session, id int) error {
 	query := fmt.Sprintf("INSERT INTO bench_ins VALUES (%d, 'v')", id)
-	return s.Exec(ctx, query)
+	return s.exec(ctx, query)
 }
 
 func drainBench(rs resultRows) (int, int64, error) {
@@ -374,6 +380,11 @@ func toFloat64(v any) (float64, error) {
 	default:
 		return 0, fmt.Errorf("unexpected float type %T", v)
 	}
+}
+
+func failBackend(be backend, err error) (backend, checksum, error) {
+	_ = be.close()
+	return nil, checksum{}, err
 }
 
 func freePort() (int, error) {

@@ -1,4 +1,4 @@
-package main
+package benchmarks
 
 import (
 	"context"
@@ -22,60 +22,59 @@ type quackBackend struct {
 	next        atomic.Uint64
 }
 
-func newQuack() *quackBackend {
-	return &quackBackend{}
-}
-
-func (q *quackBackend) Name() string { return "quack" }
-
-func (q *quackBackend) Prepare(ctx context.Context, rows int) (Checksum, error) {
+func startQuack(ctx context.Context, rows int) (backend, checksum, error) {
 	server, err := openDuckDB()
 	if err != nil {
-		return Checksum{}, err
+		return nil, checksum{}, err
 	}
-	q.server = server
+	q := &quackBackend{server: server}
 	client, err := openDuckDB()
 	if err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
 	q.client = client
 
-	fmtInstall("server")
+	logger.Info("install quack extension", "side", "server")
 	if err := installQuack(ctx, server); err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
-	conn, uri, serveDone, cancel, err := startQuack(ctx, server)
+	conn, uri, serveDone, cancel, err := serveQuack(ctx, server)
 	if err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
 	q.serveConn = conn
 	q.uri = uri
 	q.serveDone = serveDone
 	q.serveCancel = cancel
-	fmt.Fprintf(stderr, "quack listening on %s\n", uri)
+	logger.Info("quack listening", "uri", uri)
 
 	if err := seedBench(ctx, server, rows); err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
 
-	fmtInstall("client")
+	logger.Info("install quack extension", "side", "client")
 	if err := installQuack(ctx, client); err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
 
-	session, err := q.Session(ctx)
+	s, err := q.session(ctx)
 	if err != nil {
-		return Checksum{}, err
+		return failBackend(q, err)
 	}
-	defer session.Close()
-	sum, err := readChecksum(ctx, session, rows)
+	sum, err := readChecksum(ctx, s, rows)
+	closeErr := s.close()
 	if err != nil {
-		return Checksum{}, fmt.Errorf("quack: %w", err)
+		return failBackend(q, fmt.Errorf("quack: %w", err))
 	}
-	return sum, nil
+	if closeErr != nil {
+		return failBackend(q, fmt.Errorf("quack: %w", closeErr))
+	}
+	return q, sum, nil
 }
 
-func (q *quackBackend) Session(ctx context.Context) (Session, error) {
+func (q *quackBackend) name() string { return "quack" }
+
+func (q *quackBackend) session(ctx context.Context) (session, error) {
 	// Each session is its own DuckDB instance. One instance treats a second
 	// remote query as a replacement for the query already in flight.
 	db, err := openDuckDB()
@@ -100,7 +99,7 @@ func (q *quackBackend) Session(ctx context.Context) (Session, error) {
 	return &quackSession{db: db, conn: conn}, nil
 }
 
-func (q *quackBackend) Dial(ctx context.Context) (Session, error) {
+func (q *quackBackend) dial(ctx context.Context) (session, error) {
 	conn, err := q.client.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -132,7 +131,7 @@ func wrapRemote(query string) string {
 	return "FROM remote.query($bench$" + query + "$bench$)"
 }
 
-func (s *quackSession) Exec(ctx context.Context, query string) error {
+func (s *quackSession) exec(ctx context.Context, query string) error {
 	rows, err := s.conn.QueryContext(ctx, wrapRemote(query))
 	if err != nil {
 		return err
@@ -143,7 +142,7 @@ func (s *quackSession) Exec(ctx context.Context, query string) error {
 	return rows.Err()
 }
 
-func (s *quackSession) Query(ctx context.Context, query string) (resultRows, error) {
+func (s *quackSession) query(ctx context.Context, query string) (resultRows, error) {
 	rows, err := s.conn.QueryContext(ctx, wrapRemote(query))
 	if err != nil {
 		return nil, err
@@ -151,7 +150,7 @@ func (s *quackSession) Query(ctx context.Context, query string) (resultRows, err
 	return sqlRowSet{rows}, nil
 }
 
-func (s *quackSession) Close() error {
+func (s *quackSession) close() error {
 	err := s.conn.Close()
 	if closeErr := s.db.Close(); closeErr != nil && err == nil {
 		err = closeErr
@@ -159,7 +158,7 @@ func (s *quackSession) Close() error {
 	return err
 }
 
-// quackDial is an ATTACH and CONNECT session. Close drops the connection
+// quackDial is an ATTACH and CONNECT session. close drops the connection
 // instead of preparing DISCONNECT, which fails once CONNECT is active.
 type quackDial struct {
 	conn *sql.Conn
@@ -167,15 +166,15 @@ type quackDial struct {
 	name string
 }
 
-func (s *quackDial) Exec(context.Context, string) error {
+func (s *quackDial) exec(context.Context, string) error {
 	return fmt.Errorf("quack dial session cannot execute SQL")
 }
 
-func (s *quackDial) Query(context.Context, string) (resultRows, error) {
+func (s *quackDial) query(context.Context, string) (resultRows, error) {
 	return nil, fmt.Errorf("quack dial session cannot execute SQL")
 }
 
-func (s *quackDial) Close() error {
+func (s *quackDial) close() error {
 	err := s.conn.Raw(func(any) error { return driver.ErrBadConn })
 	if err != nil && !errors.Is(err, driver.ErrBadConn) {
 		return err
@@ -186,7 +185,7 @@ func (s *quackDial) Close() error {
 	return nil
 }
 
-func (q *quackBackend) Close() error {
+func (q *quackBackend) close() error {
 	if q.serveCancel != nil {
 		q.serveCancel()
 	}
@@ -213,7 +212,13 @@ func (q *quackBackend) Close() error {
 	return err
 }
 
-func startQuack(ctx context.Context, db *sql.DB) (conn *sql.Conn, uri string, done <-chan struct{}, cancel context.CancelFunc, err error) {
+func serveQuack(ctx context.Context, db *sql.DB) (
+	conn *sql.Conn,
+	uri string,
+	done <-chan struct{},
+	cancel context.CancelFunc,
+	err error,
+) {
 	var last error
 	for attempt := 0; attempt < 5; attempt++ {
 		conn, err = db.Conn(ctx)
@@ -257,7 +262,8 @@ func startQuack(ctx context.Context, db *sql.DB) (conn *sql.Conn, uri string, do
 
 func installQuack(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `INSTALL quack`); err != nil {
-		return fmt.Errorf("install quack extension (network access to the DuckDB extension repository is required on first run): %w", err)
+		return fmt.Errorf("install quack extension (network access to the DuckDB "+
+			"extension repository is required on first run): %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `LOAD quack`); err != nil {
 		return fmt.Errorf("load quack extension: %w", err)
@@ -276,8 +282,4 @@ func execRetry(ctx context.Context, db *sql.DB, query string, attempts int) erro
 		time.Sleep(100 * time.Millisecond)
 	}
 	return last
-}
-
-func fmtInstall(side string) {
-	fmt.Fprintf(stderr, "install quack extension on %s\n", side)
 }
